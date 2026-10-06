@@ -1,6 +1,6 @@
 # US Remote Job Bot
 
-A private Telegram bot that checks the public job boards of ~350 remote-friendly companies every hour and sends you each new **senior, US-remote software engineering** role, with a direct apply link and ✅ Applied / ❌ Skip buttons.
+A private Telegram bot that checks the public job boards of ~280 remote-friendly companies every hour and sends you each new **senior, US-remote software engineering** role, with a direct apply link and ✅ Applied / ❌ Skip buttons.
 
 It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sources paid job aggregators scrape) and runs entirely on free tiers:
 
