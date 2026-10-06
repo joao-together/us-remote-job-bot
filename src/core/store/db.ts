@@ -211,6 +211,16 @@ export class Store {
     };
   }
 
+  /** Just the paused flag: one small read, cheap enough to check before every send. */
+  async isPaused(): Promise<boolean> {
+    const rows = await this.driver.query<{ value: string }>({ sql: "SELECT value FROM settings WHERE key = 'paused'" });
+    try {
+      return rows[0] ? JSON.parse(rows[0].value) === true : false;
+    } catch {
+      return false;
+    }
+  }
+
   stmtSetSetting(key: SettingKey, value: unknown): Statement {
     return {
       sql: "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -368,13 +378,17 @@ export class Store {
     };
   }
 
-  /** Clears the failure count and error, optionally setting baselined/state/name. */
+  /**
+   * Clears the failure count and error, optionally setting baselined/state/name.
+   * `state` is a validation outcome: it only applies while the row is still pending_validation,
+   * so a concurrent /remove (state inactive) is never undone.
+   */
   stmtCompanySuccess(companyId: number, opts: { baselined?: boolean; state?: CompanyState; name?: string } = {}): Statement {
     const sets = ["consecutive_failures = 0", "last_error = NULL"];
     const params: unknown[] = [];
     if (opts.baselined) sets.push("baselined = 1");
     if (opts.state) {
-      sets.push("state = ?");
+      sets.push("state = CASE WHEN state = 'pending_validation' THEN ? ELSE state END");
       params.push(opts.state);
     }
     if (opts.name) {
@@ -384,9 +398,12 @@ export class Store {
     return { sql: `UPDATE companies SET ${sets.join(", ")} WHERE id = ?`, params: [...params, companyId] };
   }
 
-  /** `redactedError` must already be stripped of secrets. */
+  /**
+   * `redactedError` must already be stripped of secrets. Like stmtCompanySuccess, `state` only
+   * applies while the row is still pending_validation.
+   */
   stmtCompanyFailure(companyId: number, redactedError: string, opts: { state?: CompanyState } = {}): Statement {
-    const stateSql = opts.state ? ", state = ?" : "";
+    const stateSql = opts.state ? ", state = CASE WHEN state = 'pending_validation' THEN ? ELSE state END" : "";
     return {
       sql: `UPDATE companies SET consecutive_failures = consecutive_failures + 1, last_error = ?${stateSql} WHERE id = ?`,
       params: [redactedError.slice(0, MAX_ERROR_LENGTH), ...(opts.state ? [opts.state] : []), companyId],
@@ -435,10 +452,19 @@ export class Store {
     return rows.map(toPendingJob);
   }
 
-  /** Moves pending -> sending. Returns false when the job was not pending. */
+  /**
+   * Moves pending -> sending. Returns false when the job was neither pending nor sending.
+   *
+   * Idempotent on purpose: the D1 HTTP driver may retry a request whose first attempt was applied
+   * but whose response was lost; the retry then sees 'sending' and must still report success, or
+   * the job would be skipped and stranded in 'sending' without ever being sent. Accepting
+   * 'sending' is safe because only one poller runs at a time (Actions concurrency group) and
+   * deliver() only passes ids from listPending(), which returns 'pending' rows only, so a stale
+   * 'sending' row from an earlier run is never claimed again.
+   */
   async markSending(jobId: number): Promise<boolean> {
     const rows = await this.driver.query({
-      sql: "UPDATE jobs SET status = 'sending' WHERE id = ? AND status = 'pending' RETURNING id",
+      sql: "UPDATE jobs SET status = 'sending' WHERE id = ? AND status IN ('pending', 'sending') RETURNING id",
       params: [jobId],
     });
     return rows.length > 0;
@@ -461,6 +487,11 @@ export class Store {
 
   async markExcluded(jobId: number): Promise<void> {
     await this.driver.query({ sql: "UPDATE jobs SET status = 'excluded' WHERE id = ? AND status = 'pending'", params: [jobId] });
+  }
+
+  /** Marks a pending job whose posting has vanished from the board as seen (terminal, never sent). */
+  async markGone(jobId: number): Promise<void> {
+    await this.driver.query({ sql: "UPDATE jobs SET status = 'seen' WHERE id = ? AND status = 'pending'", params: [jobId] });
   }
 
   async updateJobDetail(jobId: number, detail: { salaryText?: string | null }): Promise<void> {

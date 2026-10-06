@@ -136,7 +136,34 @@ describe("delivery", () => {
     expect(await store.markSending(first!.id)).toBe(true);
     const pending = await store.listPending();
     expect(pending.map((j) => j.boardJobId)).toEqual(["2"]);
-    expect(await store.markSending(first!.id)).toBe(false);
+  });
+
+  it("markSending is idempotent under retry but never claims a finished job (#11)", async () => {
+    const c = await addCompany();
+    await store.runBatch([store.stmtInsertJob(job(c, "1")), store.stmtInsertJob(job(c, "2"))]);
+    const [first, second] = await store.listPending();
+    // An HTTP retry of an already-applied UPDATE must still report success.
+    expect(await store.markSending(first!.id)).toBe(true);
+    expect(await store.markSending(first!.id)).toBe(true);
+    expect((await store.getJob(first!.id))?.status).toBe("sending");
+    // listPending still never hands a 'sending' row back to deliver().
+    expect((await store.listPending()).map((j) => j.boardJobId)).toEqual(["2"]);
+
+    await sendJob(second!.id);
+    expect(await store.markSending(second!.id)).toBe(false);
+    expect((await store.getJob(second!.id))?.status).toBe("sent");
+  });
+
+  it("markGone retires only pending jobs as seen (#7)", async () => {
+    const c = await addCompany();
+    await store.runBatch([store.stmtInsertJob(job(c, "1")), store.stmtInsertJob(job(c, "2"))]);
+    const [a, b] = await store.listPending();
+    await sendJob(b!.id);
+    await store.markGone(a!.id);
+    await store.markGone(b!.id);
+    expect((await store.getJob(a!.id))?.status).toBe("seen");
+    expect((await store.getJob(b!.id))?.status).toBe("sent");
+    expect(await store.listPending()).toEqual([]);
   });
 
   it("lists pending oldest first with company info, and marks sent", async () => {
@@ -214,6 +241,37 @@ describe("companies", () => {
     expect(other.status).toBe("added");
   });
 
+  it("treats board tokens case-insensitively (#12)", async () => {
+    const first = await store.insertCompany({ name: "Acme", ats: "lever", boardToken: "acme" });
+    const again = await store.insertCompany({ name: "Acme", ats: "lever", boardToken: "Acme" });
+    expect(again.status).toBe("exists");
+    expect(again.company.id).toBe(first.company.id);
+    expect((await store.findCompaniesByName("ACME")).map((c) => c.id)).toEqual([first.company.id]);
+    // The unique index itself ignores case, so a raw insert conflicts too.
+    await expect(
+      env.DB.prepare("INSERT INTO companies (name, ats, board_token, created_at) VALUES ('X', 'lever', 'ACME', 0)").run(),
+    ).rejects.toThrow(/UNIQUE/);
+  });
+
+  it("never undoes a concurrent /remove when a validation result is written (#10)", async () => {
+    const ok = await addCompany("A", "a", "pending_validation");
+    const bad = await addCompany("B", "b", "pending_validation");
+    // /remove lands while the poller is still fetching both boards.
+    await store.setCompanyState(ok, "inactive");
+    await store.setCompanyState(bad, "inactive");
+    await store.runBatch([
+      store.stmtCompanySuccess(ok, { baselined: true, state: "active" }),
+      store.stmtCompanyFailure(bad, "not found", { state: "inactive" }),
+    ]);
+    expect(await store.getCompany(ok)).toMatchObject({ state: "inactive", baselined: true, consecutiveFailures: 0 });
+    expect(await store.getCompany(bad)).toMatchObject({ state: "inactive", consecutiveFailures: 1 });
+
+    // A still-pending company is activated as before.
+    const fresh = await addCompany("C", "c", "pending_validation");
+    await store.runBatch([store.stmtCompanySuccess(fresh, { baselined: true, state: "active" })]);
+    expect((await store.getCompany(fresh))?.state).toBe("active");
+  });
+
   it("finds companies by name or board token, case-insensitively", async () => {
     const id = await addCompany("Acme Corp", "acmecorp");
     expect((await store.findCompaniesByName("acme corp")).map((c) => c.id)).toEqual([id]);
@@ -274,6 +332,14 @@ describe("settings and status", () => {
       lastPollStats: stats,
       lastWarningAt: T0 + 9,
     });
+  });
+
+  it("reads the paused flag on its own", async () => {
+    expect(await store.isPaused()).toBe(false);
+    await store.pause();
+    expect(await store.isPaused()).toBe(true);
+    await store.resume();
+    expect(await store.isPaused()).toBe(false);
   });
 
   it("dedupes excluded words and removes them", async () => {

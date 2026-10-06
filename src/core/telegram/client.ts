@@ -63,6 +63,11 @@ export class TelegramClient {
     return { messageId: result.message_id };
   }
 
+  /** Cheap reachability/auth check; throws a TelegramError when the Bot API is unavailable. */
+  async getMe(): Promise<{ id: number; username?: string }> {
+    return this.call<{ id: number; username?: string }>("getMe", {});
+  }
+
   async editMessageReplyMarkup(chatId: ChatId, messageId: number, replyMarkup: InlineKeyboardMarkup): Promise<void> {
     await this.edit("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup });
   }

@@ -39,3 +39,15 @@ export const MAX_EXCLUDED_WORD_LENGTH = 40;
 export const DB_BATCH_SIZE = 50;
 
 export const USER_AGENT = "us-remote-job-bot/0.1 (personal job alert bot)";
+
+/**
+ * A pending job whose detail fetch keeps failing (not a 404) is sent without description/salary
+ * enrichment once it has been pending this long, instead of waiting forever.
+ */
+export const PENDING_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Max not-yet-baselined active companies fetched per poller run. Spreads the first-run baseline
+ * D1 write burst over several runs. pending_validation companies (from /add) are not capped.
+ */
+export const BASELINE_COMPANIES_PER_RUN = 60;

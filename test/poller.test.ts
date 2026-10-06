@@ -1,6 +1,8 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { mapPool, redactError, runPoll } from "../src/poller/run";
+import { BASELINE_COMPANIES_PER_RUN } from "../src/core/config";
+import type { Fetcher } from "../src/core/ats/types";
+import { mapPool, redactError, runPoll, selectForPoll } from "../src/poller/run";
 import leverFixture from "./fixtures/lever/postings.json";
 import {
   HOUR,
@@ -156,6 +158,32 @@ describe("detection and delivery", () => {
     expect(await jobStatus("p2")).toBe("sent");
   });
 
+  it("applies a /pause or /exclude sent while boards are being fetched (#6)", async () => {
+    boards.lever.acme = [];
+    await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+
+    boards.lever.acme.push(leverPosting("r1", SENIOR), leverPosting("r2", "Senior Software Engineer, Clearance Required"));
+    const base = t.deps.fetcher;
+    let fired = false;
+    // The owner pauses and adds an excluded word while the run is mid-fetch.
+    t.deps.fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!fired) {
+        fired = true;
+        await t.store.addExcludedWord("clearance");
+        await t.store.pause();
+      }
+      return base(input, init);
+    }) as Fetcher;
+    const stats = await poll();
+
+    expect(fired).toBe(true);
+    expect(await jobStatus("r1")).toBe("suppressed");
+    expect(await jobStatus("r2")).toBe("excluded");
+    expect(t.telegram.sends).toEqual([]);
+    expect(stats.sent).toBe(0);
+  });
+
   it("marks a repost as duplicate but sends a coexisting same-title opening", async () => {
     boards.lever.acme = [];
     await addCompany(t.store, "Acme", "lever", "acme");
@@ -239,6 +267,68 @@ describe("failures", () => {
     expect(settings.lastSuccessfulPollAt).toBeUndefined();
     expect(settings.lastPollStartAt).toBe(t.clock.now - HOUR);
     expect(settings.lastPollStats).toMatchObject({ companiesFailed: 1 });
+  });
+});
+
+describe("baseline rate limit (#9)", () => {
+  async function addMany(n: number, opts: { baselined?: boolean } = {}) {
+    const ids: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const token = `co${String(i).padStart(3, "0")}`;
+      boards.lever[token] = [leverPosting(`${token}-1`, SENIOR)];
+      ids.push(await addCompany(t.store, `Co ${i}`, "lever", token, opts));
+    }
+    return ids;
+  }
+
+  async function baselinedIds() {
+    const res = await env.DB.prepare("SELECT id FROM companies WHERE baselined = 1 ORDER BY id").all<{ id: number }>();
+    return res.results.map((r) => r.id);
+  }
+
+  it("baselines at most BASELINE_COMPANIES_PER_RUN new companies per run, lowest ids first", async () => {
+    expect(BASELINE_COMPANIES_PER_RUN).toBe(60);
+    const ids = await addMany(70);
+
+    const first = await poll();
+    expect(first).toMatchObject({ companiesOk: 60, companiesFailed: 0, newJobs: 60 });
+    expect(await baselinedIds()).toEqual(ids.slice(0, 60));
+    expect(t.fetcher.requests).toHaveLength(60);
+    const skipped = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs j JOIN companies c ON c.id = j.company_id WHERE c.baselined = 0").first<{ n: number }>();
+    expect(skipped!.n).toBe(0);
+
+    const second = await poll();
+    expect(second).toMatchObject({ companiesOk: 70, companiesFailed: 0, newJobs: 10 });
+    expect(await baselinedIds()).toEqual(ids);
+    expect(t.telegram.sends).toEqual([]);
+  });
+
+  it("always processes pending_validation companies and baselined ones, even at the cap", async () => {
+    boards.lever.old = [leverPosting("old-1", SENIOR)];
+    const old = await addCompany(t.store, "Old", "lever", "old", { baselined: true });
+    await addMany(60);
+    boards.lever.added = [leverPosting("added-1", SENIOR)];
+    const added = await addCompany(t.store, "Added", "lever", "added", { state: "pending_validation" });
+    boards.lever.late = [leverPosting("late-1", SENIOR)];
+    const late = await addCompany(t.store, "Late", "lever", "late");
+
+    await poll();
+
+    expect(await companyRow(added)).toMatchObject({ state: "active", baselined: 1 });
+    expect(await companyRow(late)).toMatchObject({ baselined: 0, consecutive_failures: 0 });
+    expect(await jobStatus("late-1")).toBeUndefined();
+    expect(await jobStatus("old-1")).toBe("sent");
+    expect(await baselinedIds()).toContain(old);
+  });
+
+  it("selectForPoll keeps validation and baselined companies outside the cap", () => {
+    const mk = (id: number, state: "active" | "pending_validation", baselined: boolean) =>
+      ({ id, state, baselined }) as Parameters<typeof selectForPoll>[0][number];
+    const picked = selectForPoll(
+      [mk(1, "active", false), mk(2, "pending_validation", false), mk(3, "active", true), mk(4, "active", false)],
+      1,
+    );
+    expect(picked.map((c) => c.id)).toEqual([1, 2, 3]);
   });
 });
 

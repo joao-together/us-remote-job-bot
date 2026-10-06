@@ -23,6 +23,16 @@ export function fakeTelegram() {
     failNext: false,
     /** Thrown (once) instead of the default ambiguous 502 when failNext is set. */
     failWith: undefined as Error | undefined,
+    /** While set, getMe throws (Telegram unreachable). */
+    failGetMe: false,
+    getMeCalls: 0,
+    /** Called after each successful send, e.g. to simulate /pause mid-delivery. */
+    onSend: undefined as ((sent: Sent) => void | Promise<void>) | undefined,
+    async getMe() {
+      tg.getMeCalls++;
+      if (tg.failGetMe) throw new Error("Telegram getMe request failed: fetch failed");
+      return { id: 42, username: "test_bot" };
+    },
     async sendMessage(chatId: number | string, html: string, markup?: InlineKeyboardMarkup) {
       if (tg.failNext) {
         tg.failNext = false;
@@ -30,7 +40,9 @@ export function fakeTelegram() {
         tg.failWith = undefined;
         throw err;
       }
-      sends.push({ chatId, html, markup });
+      const sent = { chatId, html, markup };
+      sends.push(sent);
+      await tg.onSend?.(sent);
       return { messageId: nextId++ };
     },
   };
@@ -73,6 +85,8 @@ export interface Boards {
   greenhouse: Record<string, unknown[]>;
   /** Greenhouse detail payloads keyed by job id. */
   ghDetail: Record<string, unknown>;
+  /** Greenhouse job ids whose detail is 404 (posting removed). Other missing details are 503. */
+  ghGone: Set<string>;
   /** Tokens whose requests time out. */
   timeout: Set<string>;
 }
@@ -93,7 +107,9 @@ export function boardFetcher(boards: Boards) {
     }
     if (ghDetail) {
       const detail = boards.ghDetail[ghDetail[2]!];
-      return detail ? json(detail) : undefined;
+      if (detail) return json(detail);
+      if (boards.ghGone.has(ghDetail[2]!)) return json({ status: 404, error: "Job not found" }, 404);
+      return json({ error: "unavailable" }, 503);
     }
     if (ghList) {
       const jobs = boards.greenhouse[ghList[1]!];
@@ -104,7 +120,7 @@ export function boardFetcher(boards: Boards) {
 }
 
 export function emptyBoards(): Boards {
-  return { lever: {}, greenhouse: {}, ghDetail: {}, timeout: new Set() };
+  return { lever: {}, greenhouse: {}, ghDetail: {}, ghGone: new Set(), timeout: new Set() };
 }
 
 export async function resetDb(): Promise<void> {

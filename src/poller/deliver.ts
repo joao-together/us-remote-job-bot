@@ -1,13 +1,13 @@
 import { adapterFor } from "../core/ats/detect";
 import type { Fetcher } from "../core/ats/types";
-import { SEND_SPACING_MS } from "../core/config";
+import { PENDING_MAX_AGE_MS, SEND_SPACING_MS } from "../core/config";
 import { findExcludedWord, type LocationClass } from "../core/match/rules";
 import type { Store } from "../core/store/db";
 import { TelegramError, type TelegramClient } from "../core/telegram/client";
 import { type AlertLocationClass, formatJobAlert, jobKeyboard } from "../core/telegram/format";
 import { errorMessage } from "../core/util";
 
-export type Sender = Pick<TelegramClient, "sendMessage">;
+export type Sender = Pick<TelegramClient, "sendMessage" | "getMe">;
 
 export interface DeliverDeps {
   store: Store;
@@ -25,6 +25,8 @@ export interface DeliverStats {
   excluded: number;
   /** Jobs left pending because their detail fetch failed. */
   detailFailures: number;
+  /** Pending jobs whose posting was gone from the board (detail 404), marked seen. */
+  gone: number;
   sendFailures: number;
 }
 
@@ -36,12 +38,17 @@ function alertClass(cls: LocationClass | null): AlertLocationClass {
 /**
  * Sends every pending job, oldest first. At-most-once: a job is marked `sending` before the
  * Telegram call and stays there if the call fails. After a send failure the run stops, so an
- * outage costs at most one job; the rest stay pending for the next run.
+ * outage costs at most one job; the rest stay pending for the next run. Before the first job is
+ * claimed, getMe checks that Telegram is reachable, so a full outage costs no job at all.
+ *
+ * Pause is re-checked before every send: /pause moves pending jobs to suppressed, and delivery
+ * stops so nothing is sent after the owner paused mid-run.
  */
 export async function deliver(deps: DeliverDeps): Promise<DeliverStats> {
   const { store, fetcher, telegram, ownerId, now, sleep, excludedWords } = deps;
-  const stats: DeliverStats = { sent: 0, excluded: 0, detailFailures: 0, sendFailures: 0 };
+  const stats: DeliverStats = { sent: 0, excluded: 0, detailFailures: 0, gone: 0, sendFailures: 0 };
   let sentBefore = false;
+  let telegramChecked = false;
 
   for (const job of await store.listPending()) {
     let description = "";
@@ -50,21 +57,41 @@ export async function deliver(deps: DeliverDeps): Promise<DeliverStats> {
     const fetchDetail = adapterFor(job.ats).fetchDetail;
     if (fetchDetail) {
       const detail = await fetchDetail(job.boardToken, job.boardJobId, fetcher);
-      if (!detail.ok) {
+      if (detail.ok) {
+        description = detail.value.description;
+        if (detail.value.salaryText && detail.value.salaryText !== job.salaryText) {
+          salaryText = detail.value.salaryText;
+          await store.updateJobDetail(job.id, { salaryText });
+        }
+      } else if (detail.kind === "not_found") {
+        // The posting vanished before we could send it: retire it instead of retrying forever.
+        await store.markGone(job.id);
+        stats.gone++;
+        continue;
+      } else if (now() - job.firstSeenAt <= PENDING_MAX_AGE_MS) {
         stats.detailFailures++;
         continue;
       }
-      description = detail.value.description;
-      if (detail.value.salaryText && detail.value.salaryText !== job.salaryText) {
-        salaryText = detail.value.salaryText;
-        await store.updateJobDetail(job.id, { salaryText });
-      }
+      // Otherwise the detail has failed for too long: send without enrichment (title-only exclusion check).
     }
 
     if (findExcludedWord(`${job.title}\n${description}`, excludedWords)) {
       await store.markExcluded(job.id);
       stats.excluded++;
       continue;
+    }
+
+    if (await store.isPaused()) break;
+
+    if (!telegramChecked) {
+      try {
+        await telegram.getMe();
+      } catch (err) {
+        stats.sendFailures++;
+        console.error(`Telegram unreachable, skipping delivery: ${errorMessage(err)}`);
+        break;
+      }
+      telegramChecked = true;
     }
 
     if (!(await store.markSending(job.id))) continue;

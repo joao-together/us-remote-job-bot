@@ -1,6 +1,6 @@
 import { adapterFor } from "../core/ats/detect";
-import { ATS_NAMES, type FetchFailure, type Fetcher, type NormalizedJob } from "../core/ats/types";
-import { FETCH_CONCURRENCY } from "../core/config";
+import { ATS_NAMES, type FetchFailure, type FetchResult, type Fetcher, type NormalizedJob } from "../core/ats/types";
+import { BASELINE_COMPANIES_PER_RUN, FETCH_CONCURRENCY } from "../core/config";
 import { findExcludedWord, matchesTarget, normalizeTitle, prepareExcludedWords } from "../core/match/rules";
 import type { Statement } from "../core/store/driver";
 import type { CompanyRow, NewJob, PollStats, RepostCandidate, Settings, Store } from "../core/store/db";
@@ -106,12 +106,19 @@ function classifyNew(job: NormalizedJob, company: CompanyRow, baselining: boolea
   return { ...base, locationClass: match.location.cls, locationReason: match.location.reason ?? null, status };
 }
 
-async function pollCompany(company: CompanyRow, deps: PollDeps, ctx: ClassifyContext): Promise<CompanyOutcome> {
-  const { store } = deps;
-  const validating = company.state === "pending_validation";
-  const res = await adapterFor(company.ats)
-    .listJobs(company.boardToken, deps.fetcher)
+function fetchCompany(company: CompanyRow, fetcher: Fetcher): Promise<FetchResult<NormalizedJob[]>> {
+  return adapterFor(company.ats)
+    .listJobs(company.boardToken, fetcher)
     .catch((err: unknown): FetchFailure => ({ ok: false, kind: "parse_error", message: errorMessage(err) }));
+}
+
+function companyOutcome(
+  company: CompanyRow,
+  res: FetchResult<NormalizedJob[]>,
+  store: Store,
+  ctx: ClassifyContext,
+): CompanyOutcome {
+  const validating = company.state === "pending_validation";
 
   if (!res.ok) {
     const error = redactError(res.message);
@@ -161,21 +168,38 @@ async function pollCompany(company: CompanyRow, deps: PollDeps, ctx: ClassifyCon
   };
 }
 
+/**
+ * Companies to check this run. Not-yet-baselined active companies are capped at
+ * BASELINE_COMPANIES_PER_RUN (lowest ids first) to spread the first-run baseline write burst;
+ * the rest wait for later runs. pending_validation companies (from /add) are never capped.
+ */
+export function selectForPoll(companies: readonly CompanyRow[], cap = BASELINE_COMPANIES_PER_RUN): CompanyRow[] {
+  let unbaselined = 0;
+  return companies.filter((c) => {
+    if (c.state === "pending_validation" || c.baselined) return true;
+    return unbaselined++ < cap;
+  });
+}
+
 /** One poller run: check every board, store new jobs, then deliver pending alerts. */
 export async function runPoll(deps: PollDeps): Promise<PollStats> {
   const { store, now } = deps;
   const runStartedAt = now();
   await store.setSetting("last_poll_start_at", runStartedAt);
 
-  const settings = await store.getSettings();
-  const companies = await store.listCompaniesForPoll();
+  const companies = selectForPoll(await store.listCompaniesForPoll());
   const ids = companies.map((c) => c.id);
   const known = await store.knownJobIds(ids);
   const candidates = await store.repostCandidates(ids, runStartedAt);
-  const excludedWords = prepareExcludedWords(settings.excludedWords);
 
-  const outcomes = await mapPool(companies, FETCH_CONCURRENCY, (company) =>
-    pollCompany(company, deps, {
+  const results = await mapPool(companies, FETCH_CONCURRENCY, (company) => fetchCompany(company, deps.fetcher));
+
+  // Read settings only now, after the (slow) fetch phase, so a /pause or /exclude sent while
+  // boards were being fetched still applies to the jobs stored this run.
+  const settings = await store.getSettings();
+  const excludedWords = prepareExcludedWords(settings.excludedWords);
+  const outcomes = companies.map((company, i) =>
+    companyOutcome(company, results[i]!, store, {
       settings,
       excludedWords,
       known: known.get(company.id) ?? new Set(),

@@ -3,7 +3,8 @@ CREATE TABLE companies (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   ats TEXT NOT NULL CHECK (ats IN ('greenhouse', 'lever', 'ashby', 'workable')),
-  board_token TEXT NOT NULL,
+  -- NOCASE so UNIQUE (ats, board_token) and lookups ignore case ("Acme" == "acme").
+  board_token TEXT NOT NULL COLLATE NOCASE,
   state TEXT NOT NULL DEFAULT 'pending_validation'
     CHECK (state IN ('active', 'pending_validation', 'inactive')),
   baselined INTEGER NOT NULL DEFAULT 0,

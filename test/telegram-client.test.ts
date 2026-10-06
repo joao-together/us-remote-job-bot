@@ -60,6 +60,20 @@ describe("TelegramClient", () => {
     });
   });
 
+  it("getMe returns the bot and throws a redacted TelegramError when unreachable", async () => {
+    const { fetcher, calls } = fakeFetcher([
+      ok({ id: 42, username: "jobs_bot" }),
+      new TypeError(`fetch failed: https://api.telegram.org/bot${TOKEN}/getMe`),
+    ]);
+    const client = new TelegramClient({ token: TOKEN, fetcher });
+    await expect(client.getMe()).resolves.toEqual({ id: 42, username: "jobs_bot" });
+    expect(calls[0]!.url).toBe(`https://api.telegram.org/bot${TOKEN}/getMe`);
+    const err = (await client.getMe().catch((e: unknown) => e)) as TelegramError;
+    expect(err).toBeInstanceOf(TelegramError);
+    expect(err.status).toBe(0);
+    expect(err.message).not.toContain(TOKEN);
+  });
+
   it("omits reply_markup when none is given", async () => {
     const { fetcher, calls } = fakeFetcher([ok({ message_id: 1 })]);
     await new TelegramClient({ token: TOKEN, fetcher }).sendMessage(1, "x");
