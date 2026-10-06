@@ -33,8 +33,13 @@ export const MAX_EXCLUDED_WORD_LENGTH = 40;
 /**
  * Statements per batch when writing to D1.
  * D1 free plan allows 100,000 rows written per day (verify at
- * https://developers.cloudflare.com/d1/platform/pricing/). Seeding ~280 companies
- * writes roughly 55k rows once; steady state is ~10k/day.
+ * https://developers.cloudflare.com/d1/platform/pricing/). A `jobs` insert costs ~5 rows
+ * written (table + indexes + sqlite_sequence), so only jobs that match (or are excluded,
+ * suppressed or duplicates) get a row; non-matching ids are stored compactly in
+ * companies.seen_ids. Baselining a company is ~1 company-row write, so seeding ~280 companies
+ * costs a few hundred rows. Steady state (hourly runs) is at most one company-row write per
+ * company whose board changed per run (<= ~7k/day for 284 companies) plus ~5 rows per new
+ * matching job.
  */
 export const DB_BATCH_SIZE = 50;
 

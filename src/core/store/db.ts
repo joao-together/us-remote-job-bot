@@ -23,6 +23,11 @@ export interface CompanyRow {
   lastError: string | null;
   createdAt: number;
   failing: boolean;
+  /**
+   * Board job ids seen on this board that never matched (baseline or failed the filters), kept
+   * here instead of as `jobs` rows. Pruned to ids still on the board. Malformed JSON reads as [].
+   */
+  seenIds: string[];
 }
 
 export interface JobRow {
@@ -59,7 +64,7 @@ export type AppliedJob = PendingJob;
 export interface PollStats {
   companiesOk: number;
   companiesFailed: number;
-  /** New board job ids stored this run, in any status. */
+  /** New board job ids recorded this run, in any status (as a job row or in companies.seen_ids). */
   newJobs: number;
   /** New ids that matched and became pending or suppressed. */
   matched: number;
@@ -129,6 +134,18 @@ const num = (v: unknown): number => Number(v);
 const numOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 const strOrNull = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 
+/** Parses companies.seen_ids; anything malformed is treated as an empty list. Deduped. */
+export function parseSeenIds(v: unknown): string[] {
+  if (typeof v !== "string") return [];
+  try {
+    const parsed: unknown = JSON.parse(v);
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter((x): x is string | number => typeof x === "string" || typeof x === "number").map(String))];
+  } catch {
+    return [];
+  }
+}
+
 function toCompany(r: Raw): CompanyRow {
   const consecutiveFailures = num(r.consecutive_failures);
   return {
@@ -142,6 +159,7 @@ function toCompany(r: Raw): CompanyRow {
     lastError: strOrNull(r.last_error),
     createdAt: num(r.created_at),
     failing: consecutiveFailures >= FAILING_AFTER_CONSECUTIVE,
+    seenIds: parseSeenIds(r.seen_ids),
   };
 }
 
@@ -340,7 +358,11 @@ export class Store {
 
   // ---- poll ----
 
-  /** Every stored board job id, per company, loaded in chunks of company ids. */
+  /**
+   * Every board job id stored as a `jobs` row (any status, including legacy 'seen' rows), per
+   * company, loaded in chunks of company ids. Ids in companies.seen_ids are known too; the
+   * poller merges those from the company rows.
+   */
   async knownJobIds(companyIds: number[]): Promise<Map<number, Set<string>>> {
     const out = new Map<number, Set<string>>();
     for (const id of companyIds) out.set(id, new Set());
@@ -379,14 +401,21 @@ export class Store {
   }
 
   /**
-   * Clears the failure count and error, optionally setting baselined/state/name.
+   * Clears the failure count and error, optionally setting baselined/state/name/seen ids.
    * `state` is a validation outcome: it only applies while the row is still pending_validation,
    * so a concurrent /remove (state inactive) is never undone.
    */
-  stmtCompanySuccess(companyId: number, opts: { baselined?: boolean; state?: CompanyState; name?: string } = {}): Statement {
+  stmtCompanySuccess(
+    companyId: number,
+    opts: { baselined?: boolean; state?: CompanyState; name?: string; seenIds?: readonly string[] } = {},
+  ): Statement {
     const sets = ["consecutive_failures = 0", "last_error = NULL"];
     const params: unknown[] = [];
     if (opts.baselined) sets.push("baselined = 1");
+    if (opts.seenIds) {
+      sets.push("seen_ids = ?");
+      params.push(JSON.stringify(opts.seenIds));
+    }
     if (opts.state) {
       sets.push("state = CASE WHEN state = 'pending_validation' THEN ? ELSE state END");
       params.push(opts.state);

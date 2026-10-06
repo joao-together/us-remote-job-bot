@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { REPOST_WINDOW_MS } from "../src/core/config";
-import { Store, type NewJob, type PollStats } from "../src/core/store/db";
+import { Store, parseSeenIds, type NewJob, type PollStats } from "../src/core/store/db";
 import { bindingDriver } from "../src/core/store/driver-binding";
 
 const T0 = Date.UTC(2026, 9, 6, 12, 0, 0);
@@ -270,6 +270,17 @@ describe("companies", () => {
     const fresh = await addCompany("C", "c", "pending_validation");
     await store.runBatch([store.stmtCompanySuccess(fresh, { baselined: true, state: "active" })]);
     expect((await store.getCompany(fresh))?.state).toBe("active");
+  });
+
+  it("stores seen ids compactly and tolerates malformed values", async () => {
+    const id = await addCompany();
+    expect((await store.getCompany(id))!.seenIds).toEqual([]);
+    await store.runBatch([store.stmtCompanySuccess(id, { seenIds: ["a", "b"] })]);
+    expect((await store.getCompany(id))!.seenIds).toEqual(["a", "b"]);
+    expect(parseSeenIds("not json")).toEqual([]);
+    expect(parseSeenIds('{"a":1}')).toEqual([]);
+    expect(parseSeenIds(null)).toEqual([]);
+    expect(parseSeenIds('["x", 7, null, "x"]')).toEqual(["x", "7"]);
   });
 
   it("finds companies by name or board token, case-insensitively", async () => {

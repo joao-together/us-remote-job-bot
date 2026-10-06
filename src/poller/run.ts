@@ -137,22 +137,35 @@ function companyOutcome(
   const onBoard = new Set(jobs.map((j) => j.id));
   const baselining = validating || !company.baselined;
   const statements: Statement[] = [];
-  const insertedIds = new Set<string>();
+  const oldSeen = new Set(company.seenIds);
+  const newIds = new Set<string>();
+  const newlySeen = new Set<string>();
   let matched = 0;
 
   for (const job of jobs) {
-    if (ctx.known.has(job.id) || insertedIds.has(job.id)) continue;
-    insertedIds.add(job.id);
+    if (ctx.known.has(job.id) || oldSeen.has(job.id) || newIds.has(job.id)) continue;
+    newIds.add(job.id);
     const row = classifyNew(job, company, baselining, onBoard, ctx);
+    // Non-matching ids are kept compactly in companies.seen_ids, not as job rows (D1 write budget).
+    if (row.status === "seen") {
+      newlySeen.add(row.boardJobId);
+      continue;
+    }
     if (row.status === "pending" || row.status === "suppressed") matched++;
     statements.push(store.stmtInsertJob(row, ctx.at));
   }
+
+  // Next seen set: old ∪ newly seen, restricted to ids still on the board (keeps it bounded).
+  const nextSeen = [...onBoard].filter((id) => oldSeen.has(id) || newlySeen.has(id));
+  const seenChanged = nextSeen.length !== oldSeen.size || nextSeen.some((id) => !oldSeen.has(id));
+
   // Write the company row only when something changes, to keep D1 rows-written low.
-  if (company.consecutiveFailures > 0 || baselining) {
+  if (company.consecutiveFailures > 0 || baselining || seenChanged) {
     statements.push(
       store.stmtCompanySuccess(company.id, {
         baselined: baselining || undefined,
         state: validating ? "active" : undefined,
+        seenIds: seenChanged ? nextSeen : undefined,
       }),
     );
   }
@@ -160,7 +173,7 @@ function companyOutcome(
   return {
     ok: true,
     statements,
-    newJobs: insertedIds.size,
+    newJobs: newIds.size,
     matched,
     ownerMessage: validating
       ? `✅ Added ${escapeHtml(company.name)} (${ATS_NAMES[company.ats]}, ${jobs.length} open jobs). New matching roles will be sent from the next check.`
@@ -189,6 +202,7 @@ export async function runPoll(deps: PollDeps): Promise<PollStats> {
 
   const companies = selectForPoll(await store.listCompaniesForPoll());
   const ids = companies.map((c) => c.id);
+  // Ids of stored job rows (any status, incl. legacy 'seen' rows); companyOutcome adds seen_ids.
   const known = await store.knownJobIds(ids);
   const candidates = await store.repostCandidates(ids, runStartedAt);
 

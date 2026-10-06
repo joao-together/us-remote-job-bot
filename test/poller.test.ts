@@ -34,6 +34,16 @@ async function companyRow(id: number) {
     .first<{ state: string; baselined: number; consecutive_failures: number; last_error: string | null }>();
 }
 
+async function seenIds(id: number): Promise<string[]> {
+  const row = await env.DB.prepare("SELECT seen_ids FROM companies WHERE id = ?").bind(id).first<{ seen_ids: string }>();
+  return JSON.parse(row!.seen_ids) as string[];
+}
+
+async function companyIdByToken(token: string): Promise<number> {
+  const row = await env.DB.prepare("SELECT id FROM companies WHERE board_token = ?").bind(token).first<{ id: number }>();
+  return row!.id;
+}
+
 async function poll() {
   const stats = await runPoll(t.deps);
   t.clock.now += HOUR;
@@ -41,25 +51,26 @@ async function poll() {
 }
 
 describe("baseline", () => {
-  it("stores a seeded company's first fetch as seen and sends nothing", async () => {
+  it("records a seeded company's first fetch in seen_ids, creates no job rows and sends nothing", async () => {
     boards.lever.acme = [1, 2, 3, 4, 5].map((i) => leverPosting(`j${i}`, `${SENIOR} ${i}`));
     const id = await addCompany(t.store, "Acme", "lever", "acme");
 
     const stats = await poll();
 
     expect(t.telegram.sends).toEqual([]);
-    expect((await jobRows()).map((r) => r.status)).toEqual(["seen", "seen", "seen", "seen", "seen"]);
+    expect(await jobRows()).toEqual([]);
+    expect((await seenIds(id)).sort()).toEqual(["j1", "j2", "j3", "j4", "j5"]);
     expect(await companyRow(id)).toMatchObject({ state: "active", baselined: 1, consecutive_failures: 0 });
     expect(stats).toMatchObject({ companiesOk: 1, companiesFailed: 0, newJobs: 5, matched: 0, sent: 0 });
   });
 
   it("baselines a real-shaped board silently", async () => {
     boards.lever.spotify = leverFixture;
-    await addCompany(t.store, "Spotify", "lever", "spotify");
+    const id = await addCompany(t.store, "Spotify", "lever", "spotify");
     await poll();
     expect(t.telegram.sends).toEqual([]);
-    expect((await jobRows()).every((r) => r.status === "seen")).toBe(true);
-    expect(await jobRows()).toHaveLength(leverFixture.length);
+    expect(await jobRows()).toEqual([]);
+    expect((await seenIds(id)).sort()).toEqual([...new Set(leverFixture.map((p) => String(p.id)))].sort());
   });
 });
 
@@ -86,8 +97,9 @@ describe("detection and delivery", () => {
       telegram_message_id: 500,
       location_class: "us",
     });
-    expect(await jobStatus("staff")).toBe("seen");
-    expect(await jobStatus("emea")).toBe("seen");
+    expect(await jobStatus("staff")).toBeUndefined();
+    expect(await jobStatus("emea")).toBeUndefined();
+    expect((await seenIds(await companyIdByToken("acme"))).sort()).toEqual(["emea", "old", "staff"]);
     expect(stats).toMatchObject({ newJobs: 3, matched: 1, sent: 1, sendFailures: 0 });
 
     const settings = await t.store.getSettings();
@@ -213,6 +225,96 @@ describe("detection and delivery", () => {
     await poll();
     expect(t.telegram.sends).toHaveLength(2);
     expect(t.sleeps).toEqual([1100]);
+  });
+});
+
+describe("compact seen ids", () => {
+  it("adds a non-matching new job to seen_ids and inserts and sends a matching one", async () => {
+    boards.lever.acme = [leverPosting("b1", SENIOR)];
+    const id = await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    expect(await seenIds(id)).toEqual(["b1"]);
+
+    boards.lever.acme.push(leverPosting("nm", "Office Manager"), leverPosting("m", "Senior Backend Engineer"));
+    const stats = await poll();
+
+    expect((await seenIds(id)).sort()).toEqual(["b1", "nm"]);
+    expect(await jobRows()).toEqual([expect.objectContaining({ board_job_id: "m", status: "sent" })]);
+    expect(t.telegram.sends).toHaveLength(1);
+    expect(stats).toMatchObject({ newJobs: 2, matched: 1, sent: 1 });
+  });
+
+  it("does not re-classify an id in seen_ids and prunes ids that leave the board", async () => {
+    boards.lever.acme = [leverPosting("s1", SENIOR), leverPosting("s2", SENIOR)];
+    const id = await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    expect((await seenIds(id)).sort()).toEqual(["s1", "s2"]);
+
+    // s1 now matches (company is baselined) but is known via seen_ids; s2 vanishes.
+    boards.lever.acme = [leverPosting("s1", SENIOR)];
+    const stats = await poll();
+
+    expect(t.telegram.sends).toEqual([]);
+    expect(await jobRows()).toEqual([]);
+    expect(await seenIds(id)).toEqual(["s1"]);
+    expect(stats).toMatchObject({ newJobs: 0, matched: 0 });
+  });
+
+  it("still treats legacy 'seen' job rows as known", async () => {
+    boards.lever.acme = [];
+    const id = await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    await env.DB.prepare(
+      `INSERT INTO jobs (company_id, board_job_id, title, normalized_title, apply_url, status, first_seen_at)
+       VALUES (?, 'legacy', ?, 'senior software engineer', 'https://x', 'seen', 0)`,
+    )
+      .bind(id, SENIOR)
+      .run();
+
+    boards.lever.acme = [leverPosting("legacy", SENIOR)];
+    const stats = await poll();
+
+    expect(t.telegram.sends).toEqual([]);
+    expect(stats.newJobs).toBe(0);
+    expect(await seenIds(id)).toEqual([]);
+    expect(await jobRows()).toEqual([expect.objectContaining({ board_job_id: "legacy", status: "seen" })]);
+  });
+
+  it("writes nothing to the company row in a steady-state run", async () => {
+    boards.lever.acme = [leverPosting("x1", "Office Manager"), leverPosting("x2", SENIOR)];
+    const id = await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    const before = await seenIds(id);
+
+    // Any company write would replace seen_ids and clear last_error; plant markers to detect one.
+    await env.DB.prepare("UPDATE companies SET last_error = 'marker', seen_ids = ? WHERE id = ?")
+      .bind(JSON.stringify(before), id)
+      .run();
+    const raw = async () =>
+      (await env.DB.prepare("SELECT seen_ids, last_error FROM companies WHERE id = ?").bind(id).first())!;
+    const snapshot = await raw();
+    await poll();
+    expect(await raw()).toEqual(snapshot);
+    expect(snapshot.last_error).toBe("marker");
+  });
+
+  it("creates no job rows when baselining a board of 50 non-matching jobs", async () => {
+    boards.lever.big = Array.from({ length: 50 }, (_, i) => leverPosting(`n${i}`, `Account Executive ${i}`));
+    const id = await addCompany(t.store, "Big", "lever", "big");
+    const stats = await poll();
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs").first<{ n: number }>();
+    expect(count!.n).toBe(0);
+    expect(await seenIds(id)).toHaveLength(50);
+    expect(stats.newJobs).toBe(50);
+  });
+
+  it("reads malformed seen_ids as empty", async () => {
+    boards.lever.acme = [leverPosting("z1", "Office Manager")];
+    const id = await addCompany(t.store, "Acme", "lever", "acme", { baselined: true });
+    await env.DB.prepare("UPDATE companies SET seen_ids = 'not json' WHERE id = ?").bind(id).run();
+    expect((await t.store.getCompany(id))!.seenIds).toEqual([]);
+    await poll();
+    expect(await seenIds(id)).toEqual(["z1"]);
   });
 });
 
@@ -344,7 +446,8 @@ describe("pending_validation companies", () => {
       "✅ Added Acme (Lever, 2 open jobs). New matching roles will be sent from the next check.",
     );
     expect(await companyRow(id)).toMatchObject({ state: "active", baselined: 1 });
-    expect((await jobRows()).map((r) => r.status)).toEqual(["seen", "seen"]);
+    expect(await jobRows()).toEqual([]);
+    expect((await seenIds(id)).sort()).toEqual(["v1", "v2"]);
 
     boards.lever.acme.push(leverPosting("v3", "Senior Web Developer"));
     await poll();
@@ -406,8 +509,9 @@ describe("helpers", () => {
 
   it("uses greenhouse boards too", async () => {
     boards.greenhouse.globex = [greenhouseJob(1, SENIOR)];
-    await addCompany(t.store, "Globex", "greenhouse", "globex");
+    const id = await addCompany(t.store, "Globex", "greenhouse", "globex");
     await poll();
-    expect(await jobStatus("1")).toBe("seen");
+    expect(await jobStatus("1")).toBeUndefined();
+    expect(await seenIds(id)).toEqual(["1"]);
   });
 });
