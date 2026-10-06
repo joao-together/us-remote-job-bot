@@ -474,6 +474,14 @@ export class Store {
     return rows.length > 0;
   }
 
+  /** Moves sending -> pending, for sends Telegram definitely rejected. */
+  async revertSending(jobId: number): Promise<void> {
+    await this.driver.query({
+      sql: "UPDATE jobs SET status = 'pending' WHERE id = ? AND status = 'sending'",
+      params: [jobId],
+    });
+  }
+
   async markSent(jobId: number, messageId: number, at: number = this.now()): Promise<void> {
     await this.driver.query({
       sql: "UPDATE jobs SET status = 'sent', telegram_message_id = ?, sent_at = ? WHERE id = ? AND status IN ('sending', 'pending')",
