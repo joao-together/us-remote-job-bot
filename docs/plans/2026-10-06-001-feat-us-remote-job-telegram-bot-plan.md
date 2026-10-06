@@ -1,7 +1,7 @@
 ---
 title: "feat: US remote senior SWE job alerts Telegram bot"
 type: feat
-status: active
+status: completed
 date: 2026-10-06
 origin: docs/brainstorms/2026-10-06-us-remote-job-telegram-bot-requirements.md
 ---

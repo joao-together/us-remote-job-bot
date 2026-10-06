@@ -33,7 +33,7 @@ export const MAX_EXCLUDED_WORD_LENGTH = 40;
 /**
  * Statements per batch when writing to D1.
  * D1 free plan allows 100,000 rows written per day (verify at
- * https://developers.cloudflare.com/d1/platform/pricing/). Seeding ~350 companies
+ * https://developers.cloudflare.com/d1/platform/pricing/). Seeding ~280 companies
  * writes roughly 55k rows once; steady state is ~10k/day.
  */
 export const DB_BATCH_SIZE = 50;
