@@ -1,6 +1,8 @@
 name = "us-remote-job-bot"
 main = "src/worker/index.ts"
 compatibility_date = "2026-08-15"
+workers_dev = true
+preview_urls = false
 
 # Hourly watchdog: warns if the GitHub Actions poller stops succeeding.
 [triggers]
@@ -10,7 +12,7 @@ crons = ["43 * * * *"]
 binding = "DB"
 database_name = "jobbot"
 # Replace with the id printed by `wrangler d1 create jobbot`.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "d0501276-dc48-4b2b-8a0a-89a33508cf38"
 migrations_dir = "migrations"
 
 # Secrets (set with `wrangler secret put`):
