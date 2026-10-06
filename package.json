@@ -1,0 +1,24 @@
+{
+  "name": "us-remote-job-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "poll": "tsx src/poller/main.ts",
+    "seed:build": "tsx scripts/build-seed.ts",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply jobbot --local",
+    "db:migrate:remote": "wrangler d1 migrations apply jobbot --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20261006.1",
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9",
+    "vitest": "~4.1.0",
+    "wrangler": "^4.148.0"
+  }
+}
