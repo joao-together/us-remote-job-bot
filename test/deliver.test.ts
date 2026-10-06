@@ -1,6 +1,7 @@
+import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { TelegramError } from "../src/core/telegram/client";
-import { alertLocation, deliver } from "../src/poller/deliver";
+import { deliver } from "../src/poller/deliver";
 import { runPoll } from "../src/poller/run";
 import ghDetailNoPay from "./fixtures/greenhouse/detail-no-pay.json";
 import ghDetailPay from "./fixtures/greenhouse/detail-pay.json";
@@ -145,24 +146,49 @@ describe("deliver", () => {
   });
 });
 
-describe("alertLocation", () => {
-  it("recomputes the warning reason from the location text", () => {
-    expect(alertLocation({ locationText: "Remote - US", locationClass: "us" })).toEqual({ locationClass: "us" });
-    expect(alertLocation({ locationText: "Remote - US (CA, NY, TX only)", locationClass: "us_restricted" })).toEqual({
-      locationClass: "us_restricted",
-      locationReason: "Limited to some US states: CA, NY, TX",
-    });
-    expect(alertLocation({ locationText: "United States", locationClass: "ambiguous" })).toEqual({
-      locationClass: "ambiguous",
-      locationReason: "Doesn't say remote; location is just the US",
-    });
+describe("location warnings", () => {
+  it("shows the location reason stored at detection", async () => {
+    await greenhouseWith(
+      greenhouseJob(21, "Senior Software Engineer", "Remote - US (CA, NY, TX only)"),
+      greenhouseJob(22, "Senior Backend Engineer", "United States"),
+      greenhouseJob(23, "Senior Frontend Engineer", "Remote - US"),
+    );
+    for (const id of ["21", "22", "23"]) boards.ghDetail[id] = ghDetailNoPay;
+
+    await poll();
+
+    const rows = await env.DB.prepare("SELECT board_job_id, location_class, location_reason FROM jobs ORDER BY board_job_id").all();
+    expect(rows.results).toEqual([
+      { board_job_id: "21", location_class: "us_restricted", location_reason: "Limited to some US states: CA, NY, TX" },
+      { board_job_id: "22", location_class: "ambiguous", location_reason: "Doesn't say remote; location is just the US" },
+      { board_job_id: "23", location_class: "us", location_reason: null },
+    ]);
+    const html = t.telegram.sends.map((s) => s.html);
+    expect(html).toHaveLength(3);
+    expect(html[0]).toContain("⚠️ Limited to some US states: CA, NY, TX");
+    expect(html[1]).toContain("⚠️ Doesn't say remote; location is just the US");
+    expect(html[2]).not.toContain("⚠️");
   });
 
-  it("falls back to the formatter's generic reason", () => {
-    expect(alertLocation({ locationText: "New York, NY", locationClass: "ambiguous" })).toEqual({ locationClass: "ambiguous" });
-    expect(alertLocation({ locationText: "", locationClass: null })).toEqual({
-      locationClass: "ambiguous",
-      locationReason: "Location doesn't say US",
-    });
+  it("falls back to the formatter's generic reason when none was stored", async () => {
+    const id = await addCompany(t.store, "Globex", "greenhouse", "globex", { baselined: true });
+    await t.store.runBatch([
+      t.store.stmtInsertJob({
+        companyId: id,
+        boardJobId: "31",
+        title: "Senior Software Engineer",
+        normalizedTitle: "senior software engineer",
+        locationText: "Somewhere",
+        locationClass: null,
+        applyUrl: "https://job-boards.greenhouse.io/globex/jobs/31",
+        status: "pending",
+      }),
+    ]);
+    boards.ghDetail["31"] = ghDetailNoPay;
+
+    await deliver({ ...t.deps, excludedWords: [] });
+
+    expect(t.telegram.sends).toHaveLength(1);
+    expect(t.telegram.sends[0]!.html).toContain("⚠️ Check location eligibility");
   });
 });

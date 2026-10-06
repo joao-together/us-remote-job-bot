@@ -1,4 +1,5 @@
 import { REQUEST_TIMEOUT_MS } from "../config";
+import { errorMessage, redactSecrets, sleep } from "../util";
 import type { InlineKeyboardMarkup } from "./format";
 
 const API_BASE = "https://api.telegram.org";
@@ -39,8 +40,6 @@ interface TelegramResponse<T> {
 
 type ChatId = number | string;
 
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 export class TelegramClient {
   private readonly token: string;
   private readonly fetcher: typeof fetch;
@@ -50,7 +49,7 @@ export class TelegramClient {
   constructor(opts: TelegramClientOptions) {
     this.token = opts.token;
     this.fetcher = opts.fetcher ?? ((input, init) => fetch(input, init));
-    this.sleep = opts.sleep ?? defaultSleep;
+    this.sleep = opts.sleep ?? sleep;
     this.waitOn429 = opts.waitOn429 ?? false;
   }
 
@@ -135,7 +134,7 @@ export class TelegramClient {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
-      const reason = this.redact(err instanceof Error ? err.message : String(err));
+      const reason = this.redact(errorMessage(err));
       throw new TelegramError(`Telegram ${method} request failed: ${reason}`, 0, reason);
     }
 
@@ -155,6 +154,6 @@ export class TelegramClient {
   }
 
   private redact(text: string): string {
-    return this.token ? text.split(this.token).join("<redacted>") : text;
+    return redactSecrets(text, this.token);
   }
 }

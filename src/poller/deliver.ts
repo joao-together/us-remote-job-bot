@@ -1,10 +1,11 @@
 import { adapterFor } from "../core/ats/detect";
 import type { Fetcher } from "../core/ats/types";
 import { SEND_SPACING_MS } from "../core/config";
-import { classifyLocation, findExcludedWord, type LocationClass } from "../core/match/rules";
-import type { PendingJob, Store } from "../core/store/db";
+import { findExcludedWord, type LocationClass } from "../core/match/rules";
+import type { Store } from "../core/store/db";
 import { TelegramError, type TelegramClient } from "../core/telegram/client";
-import { formatJobAlert, jobKeyboard, type LocationClass as AlertLocationClass } from "../core/telegram/format";
+import { type AlertLocationClass, formatJobAlert, jobKeyboard } from "../core/telegram/format";
+import { errorMessage } from "../core/util";
 
 export type Sender = Pick<TelegramClient, "sendMessage">;
 
@@ -15,7 +16,8 @@ export interface DeliverDeps {
   ownerId: string;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
-  excludedWords: string[];
+  /** Excluded words as returned by prepareExcludedWords. */
+  excludedWords: readonly (readonly string[])[];
 }
 
 export interface DeliverStats {
@@ -26,23 +28,9 @@ export interface DeliverStats {
   sendFailures: number;
 }
 
-const ALERT_CLASSES: readonly string[] = ["us", "us_restricted", "ambiguous"];
-
-/**
- * Only the class is stored, so the warning reason is recomputed from the location text.
- * When neither remote reading reproduces the stored class, the formatter's generic reason is used.
- */
-export function alertLocation(job: Pick<PendingJob, "locationText" | "locationClass">): {
-  locationClass: AlertLocationClass;
-  locationReason?: string;
-} {
-  const cls = (ALERT_CLASSES.includes(job.locationClass ?? "") ? job.locationClass : "ambiguous") as AlertLocationClass;
-  if (cls === "us") return { locationClass: cls };
-  for (const remote of ["yes", "unknown"] as const) {
-    const res = classifyLocation({ locationText: job.locationText, remote, countryCodes: [] });
-    if (res.cls === (cls as LocationClass)) return { locationClass: cls, locationReason: res.reason };
-  }
-  return { locationClass: cls };
+/** Only matching classes are ever pending; anything else (a null class) is shown as ambiguous. */
+function alertClass(cls: LocationClass | null): AlertLocationClass {
+  return cls === "us" || cls === "us_restricted" ? cls : "ambiguous";
 }
 
 /**
@@ -89,7 +77,8 @@ export async function deliver(deps: DeliverDeps): Promise<DeliverStats> {
         title: job.title,
         companyName: job.companyName,
         locationText: job.locationText,
-        ...alertLocation(job),
+        locationClass: alertClass(job.locationClass),
+        locationReason: job.locationReason ?? undefined,
         salaryText: salaryText ?? undefined,
         postedAt: job.postedAt ?? undefined,
         applyUrl: job.applyUrl,
@@ -102,7 +91,7 @@ export async function deliver(deps: DeliverDeps): Promise<DeliverStats> {
       ({ messageId } = await telegram.sendMessage(ownerId, html, jobKeyboard(job.id)));
     } catch (err) {
       stats.sendFailures++;
-      console.error(`send failed for job ${job.id}: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`send failed for job ${job.id}: ${errorMessage(err)}`);
       // A 4xx means Telegram rejected the message, so it is safe to retry next run.
       // Network errors and 5xx are ambiguous: keep 'sending' so it is never sent twice.
       if (err instanceof TelegramError && err.status >= 400 && err.status < 500) {

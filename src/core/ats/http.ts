@@ -1,5 +1,6 @@
 import { REQUEST_TIMEOUT_MS, USER_AGENT } from "../config";
 import type { FetchFailure, FetchFailureKind, FetchResult, Fetcher } from "./types";
+import { errorMessage } from "../util";
 
 export function failure(kind: FetchFailureKind, message: string): FetchFailure {
   return { ok: false, kind, message };
@@ -30,7 +31,7 @@ export async function fetchJson(fetcher: Fetcher, url: string, req: JsonRequest 
   } catch (err) {
     const name = err instanceof Error ? err.name : "";
     if (name === "AbortError" || name === "TimeoutError") return failure("timeout", `Timed out fetching ${url}`);
-    return failure("http_error", `Network error fetching ${url}: ${err instanceof Error ? err.message : String(err)}`);
+    return failure("http_error", `Network error fetching ${url}: ${errorMessage(err)}`);
   }
 
   let text: string;

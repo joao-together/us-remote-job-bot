@@ -2,6 +2,20 @@ export type AtsKind = "greenhouse" | "lever" | "ashby" | "workable";
 
 export const ATS_KINDS: readonly AtsKind[] = ["greenhouse", "lever", "ashby", "workable"];
 
+/** Display name of each board type. */
+export const ATS_NAMES: Record<AtsKind, string> = {
+  greenhouse: "Greenhouse",
+  lever: "Lever",
+  ashby: "Ashby",
+  workable: "Workable",
+};
+
+/** Human list of every board type, e.g. "Greenhouse, Lever, Ashby or Workable". */
+export function atsNameList(conjunction: "and" | "or"): string {
+  const names = ATS_KINDS.map((k) => ATS_NAMES[k]);
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} ${conjunction} ${names[names.length - 1]}`;
+}
+
 /** Whether a posting is remote: explicit yes/no, or unknown when the board has no remote field. */
 export type RemoteSignal = "yes" | "no" | "unknown";
 

@@ -1,5 +1,6 @@
 import type { AtsKind } from "../ats/types";
 import { FAILING_AFTER_CONSECUTIVE, REPOST_WINDOW_MS } from "../config";
+import type { LocationClass } from "../match/rules";
 import type { DbDriver, Statement } from "./driver";
 import { chunk } from "./driver-binding";
 
@@ -10,7 +11,6 @@ const MAX_ERROR_LENGTH = 500;
 export type CompanyState = "active" | "pending_validation" | "inactive";
 export type JobStatus = "seen" | "duplicate" | "excluded" | "suppressed" | "pending" | "sending" | "sent";
 export type UserAction = "applied" | "skipped";
-export type LocationClass = "us" | "us_restricted" | "ambiguous" | "non_us" | "onsite";
 
 export interface CompanyRow {
   id: number;
@@ -19,8 +19,6 @@ export interface CompanyRow {
   boardToken: string;
   state: CompanyState;
   baselined: boolean;
-  lastCheckedAt: number | null;
-  lastSuccessAt: number | null;
   consecutiveFailures: number;
   lastError: string | null;
   createdAt: number;
@@ -34,7 +32,9 @@ export interface JobRow {
   title: string;
   normalizedTitle: string;
   locationText: string;
-  locationClass: string | null;
+  locationClass: LocationClass | null;
+  /** Why the location was flagged, recorded at detection; null for plain US jobs. */
+  locationReason: string | null;
   applyUrl: string;
   postedAt: number | null;
   salaryText: string | null;
@@ -43,7 +43,6 @@ export interface JobRow {
   userAction: UserAction | null;
   actionAt: number | null;
   firstSeenAt: number;
-  lastSeenOnBoardAt: number;
   sentAt: number | null;
 }
 
@@ -56,11 +55,16 @@ export interface PendingJob extends JobRow {
 
 export type AppliedJob = PendingJob;
 
+/** Summary of one poller run, stored in the `last_poll_stats` setting. */
 export interface PollStats {
   companiesOk: number;
   companiesFailed: number;
+  /** New board job ids stored this run, in any status. */
+  newJobs: number;
+  /** New ids that matched and became pending or suppressed. */
+  matched: number;
   sent: number;
-  [key: string]: unknown;
+  sendFailures: number;
 }
 
 export interface Settings {
@@ -95,14 +99,15 @@ export interface NewJob {
   title: string;
   normalizedTitle: string;
   locationText: string;
-  locationClass?: string | null;
+  locationClass?: LocationClass | null;
+  locationReason?: string | null;
   applyUrl: string;
   postedAt?: number | null;
   salaryText?: string | null;
   status: Exclude<JobStatus, "sending" | "sent">;
 }
 
-/** An earlier sent/pending job that a new id with the same title and location may be a repost of. */
+/** An earlier sent/pending/sending job that a new id with the same title and location may be a repost of. */
 export interface RepostCandidate {
   companyId: number;
   boardJobId: string;
@@ -133,8 +138,6 @@ function toCompany(r: Raw): CompanyRow {
     boardToken: String(r.board_token),
     state: r.state as CompanyState,
     baselined: num(r.baselined) === 1,
-    lastCheckedAt: numOrNull(r.last_checked_at),
-    lastSuccessAt: numOrNull(r.last_success_at),
     consecutiveFailures,
     lastError: strOrNull(r.last_error),
     createdAt: num(r.created_at),
@@ -150,7 +153,8 @@ function toJob(r: Raw): JobRow {
     title: String(r.title),
     normalizedTitle: String(r.normalized_title),
     locationText: String(r.location_text ?? ""),
-    locationClass: strOrNull(r.location_class),
+    locationClass: strOrNull(r.location_class) as LocationClass | null,
+    locationReason: strOrNull(r.location_reason),
     applyUrl: String(r.apply_url),
     postedAt: numOrNull(r.posted_at),
     salaryText: strOrNull(r.salary_text),
@@ -159,7 +163,6 @@ function toJob(r: Raw): JobRow {
     userAction: (r.user_action as UserAction | null) ?? null,
     actionAt: numOrNull(r.action_at),
     firstSeenAt: num(r.first_seen_at),
-    lastSeenOnBoardAt: num(r.last_seen_on_board_at),
     sentAt: numOrNull(r.sent_at),
   };
 }
@@ -172,10 +175,6 @@ const JOB_WITH_COMPANY = `SELECT j.*, c.name AS company_name, c.ats AS ats, c.bo
   FROM jobs j JOIN companies c ON c.id = j.company_id`;
 
 const placeholders = (n: number) => Array.from({ length: n }, () => "?").join(", ");
-
-export function normalizeExcludedWord(word: string): string {
-  return word.trim().toLowerCase();
-}
 
 export class Store {
   constructor(
@@ -223,19 +222,19 @@ export class Store {
     await this.driver.query(this.stmtSetSetting(key, value));
   }
 
+  /** `word` must already be canonical (see normalizeExcludedWord in match/rules). */
   async addExcludedWord(word: string): Promise<string[]> {
-    const w = normalizeExcludedWord(word);
     const { excludedWords } = await this.getSettings();
-    if (!w || excludedWords.includes(w)) return excludedWords;
-    const next = [...excludedWords, w];
+    if (!word || excludedWords.includes(word)) return excludedWords;
+    const next = [...excludedWords, word];
     await this.setSetting("excluded_words", next);
     return next;
   }
 
+  /** `word` must already be canonical (see normalizeExcludedWord in match/rules). */
   async removeExcludedWord(word: string): Promise<string[]> {
-    const w = normalizeExcludedWord(word);
     const { excludedWords } = await this.getSettings();
-    const next = excludedWords.filter((x) => x !== w);
+    const next = excludedWords.filter((x) => x !== word);
     if (next.length !== excludedWords.length) await this.setSetting("excluded_words", next);
     return next;
   }
@@ -349,7 +348,7 @@ export class Store {
   stmtInsertJob(job: NewJob, at: number = this.now()): Statement {
     return {
       sql: `INSERT INTO jobs (company_id, board_job_id, title, normalized_title, location_text, location_class,
-          apply_url, posted_at, salary_text, status, first_seen_at, last_seen_on_board_at)
+          location_reason, apply_url, posted_at, salary_text, status, first_seen_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(company_id, board_job_id) DO NOTHING`,
       params: [
@@ -359,35 +358,20 @@ export class Store {
         job.normalizedTitle,
         job.locationText,
         job.locationClass ?? null,
+        job.locationReason ?? null,
         job.applyUrl,
         job.postedAt ?? null,
         job.salaryText ?? null,
         job.status,
         at,
-        at,
       ],
     };
   }
 
-  /**
-   * Updates last_seen_on_board_at for known jobs still on the board. Only rows that can be repost
-   * candidates (pending/sending/sent) are touched, to keep D1 rows-written low.
-   */
-  stmtsTouchJobsSeen(companyId: number, boardJobIds: string[], at: number): Statement[] {
-    return chunk(boardJobIds, MAX_IN_PARAMS).map((ids) => ({
-      sql: `UPDATE jobs SET last_seen_on_board_at = ?
-        WHERE company_id = ? AND status IN ('pending', 'sending', 'sent') AND board_job_id IN (${placeholders(ids.length)})`,
-      params: [at, companyId, ...ids],
-    }));
-  }
-
-  stmtCompanySuccess(
-    companyId: number,
-    at: number,
-    opts: { baselined?: boolean; state?: CompanyState; name?: string } = {},
-  ): Statement {
-    const sets = ["last_checked_at = ?", "last_success_at = ?", "consecutive_failures = 0", "last_error = NULL"];
-    const params: unknown[] = [at, at];
+  /** Clears the failure count and error, optionally setting baselined/state/name. */
+  stmtCompanySuccess(companyId: number, opts: { baselined?: boolean; state?: CompanyState; name?: string } = {}): Statement {
+    const sets = ["consecutive_failures = 0", "last_error = NULL"];
+    const params: unknown[] = [];
     if (opts.baselined) sets.push("baselined = 1");
     if (opts.state) {
       sets.push("state = ?");
@@ -401,34 +385,20 @@ export class Store {
   }
 
   /** `redactedError` must already be stripped of secrets. */
-  stmtCompanyFailure(companyId: number, at: number, redactedError: string, opts: { state?: CompanyState } = {}): Statement {
+  stmtCompanyFailure(companyId: number, redactedError: string, opts: { state?: CompanyState } = {}): Statement {
     const stateSql = opts.state ? ", state = ?" : "";
     return {
-      sql: `UPDATE companies SET last_checked_at = ?, consecutive_failures = consecutive_failures + 1, last_error = ?${stateSql}
-        WHERE id = ?`,
-      params: [at, redactedError.slice(0, MAX_ERROR_LENGTH), ...(opts.state ? [opts.state] : []), companyId],
+      sql: `UPDATE companies SET consecutive_failures = consecutive_failures + 1, last_error = ?${stateSql} WHERE id = ?`,
+      params: [redactedError.slice(0, MAX_ERROR_LENGTH), ...(opts.state ? [opts.state] : []), companyId],
     };
   }
 
   // ---- repost guard ----
 
   /**
-   * True when an earlier pending/sending/sent job of the company with the same normalized title and
-   * location, first seen within the repost window, was not seen on the board in this run.
-   */
-  async isRepost(companyId: number, normalizedTitle: string, locationText: string, runStartedAt: number): Promise<boolean> {
-    const rows = await this.driver.query({
-      sql: `SELECT 1 AS hit FROM jobs WHERE company_id = ? AND normalized_title = ? AND location_text = ?
-        AND status IN ('sent', 'pending', 'sending') AND first_seen_at >= ? AND last_seen_on_board_at < ? LIMIT 1`,
-      params: [companyId, normalizedTitle, locationText, runStartedAt - REPOST_WINDOW_MS, runStartedAt],
-    });
-    return rows.length > 0;
-  }
-
-  /**
-   * Batched repost lookup: every pending/sending/sent job of these companies first seen within the
-   * window. The poller must drop candidates whose boardJobId is on the board in the current fetch
-   * (their last_seen is not yet updated when classification runs), then match on title + location.
+   * Repost lookup: every pending/sending/sent job of these companies first seen within the window.
+   * A new id is a repost when a candidate with the same normalized title and location text is no
+   * longer on the board in the current fetch; the poller does that check in memory.
    */
   async repostCandidates(companyIds: number[], runStartedAt: number): Promise<Map<number, RepostCandidate[]>> {
     const out = new Map<number, RepostCandidate[]>();

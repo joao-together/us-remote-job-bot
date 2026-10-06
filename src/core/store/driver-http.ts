@@ -1,6 +1,7 @@
 import { DB_BATCH_SIZE } from "../config";
 import type { DbDriver, Statement } from "./driver";
 import { chunk, normalizeParams } from "./driver-binding";
+import { errorMessage, redactSecrets, sleep as defaultSleep } from "../util";
 
 export interface HttpDriverOptions {
   accountId: string;
@@ -30,8 +31,6 @@ interface D1Response {
 
 class RetryableError extends Error {}
 
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /** Driver over the Cloudflare D1 HTTP API, used by the GitHub Actions poller. */
 export function httpDriver(opts: HttpDriverOptions): DbDriver {
   const fetcher = opts.fetcher ?? fetch;
@@ -42,8 +41,6 @@ export function httpDriver(opts: HttpDriverOptions): DbDriver {
     `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(opts.accountId)}` +
     `/d1/database/${encodeURIComponent(opts.databaseId)}/query`;
 
-  const redact = (text: string) => (opts.apiToken ? text.split(opts.apiToken).join("[redacted]") : text);
-
   async function attempt(body: unknown): Promise<D1QueryResult[]> {
     let res: Response;
     try {
@@ -53,7 +50,7 @@ export function httpDriver(opts: HttpDriverOptions): DbDriver {
         body: JSON.stringify(body),
       });
     } catch (err) {
-      throw new RetryableError(`network error: ${err instanceof Error ? err.message : String(err)}`);
+      throw new RetryableError(`network error: ${errorMessage(err)}`);
     }
     const text = await res.text();
     if (res.status === 429 || res.status >= 500) {
@@ -85,7 +82,7 @@ export function httpDriver(opts: HttpDriverOptions): DbDriver {
         await sleep(baseDelayMs * 2 ** (i - 1));
       }
     }
-    throw new Error(redact(`D1 HTTP query failed: ${lastError.message}`));
+    throw new Error(redactSecrets(`D1 HTTP query failed: ${lastError.message}`, opts.apiToken));
   }
 
   const toBody = (stmt: Statement) => ({ sql: stmt.sql, params: normalizeParams(stmt.params) });

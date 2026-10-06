@@ -2,7 +2,7 @@ import { ashby } from "./ashby";
 import { greenhouse } from "./greenhouse";
 import { failure } from "./http";
 import { lever } from "./lever";
-import { ATS_KINDS, type AtsAdapter, type AtsKind, type BoardRef, type FetchFailure, type FetchResult, type Fetcher, type NormalizedJob } from "./types";
+import { ATS_KINDS, ATS_NAMES, atsNameList, type AtsAdapter, type AtsKind, type BoardRef, type FetchFailure, type FetchResult, type Fetcher, type NormalizedJob } from "./types";
 import { workable } from "./workable";
 
 export const SLUG_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -14,13 +14,6 @@ export function adapterFor(kind: AtsKind): AtsAdapter {
 }
 
 export type ParsedBoardInput = BoardRef | { slug: string } | { error: string };
-
-const NAMES: Record<AtsKind, string> = {
-  greenhouse: "Greenhouse",
-  lever: "Lever",
-  ashby: "Ashby",
-  workable: "Workable",
-};
 
 function firstSegment(url: URL): string {
   return url.pathname.split("/").filter(Boolean)[0] ?? "";
@@ -68,10 +61,10 @@ export function parseBoardInput(input: string): ParsedBoardInput {
     if (url.searchParams.has("gh_jid")) {
       return { error: "That page embeds a Greenhouse board; send the boards.greenhouse.io link or the board slug instead." };
     }
-    return { error: "Unrecognized careers URL. Supported: Greenhouse, Lever, Ashby and Workable board links." };
+    return { error: `Unrecognized careers URL. Supported: ${atsNameList("and")} board links.` };
   }
   if (!SLUG_PATTERN.test(match.token)) {
-    return { error: `Couldn't find a valid ${NAMES[match.ats]} board name in that URL.` };
+    return { error: `Couldn't find a valid ${ATS_NAMES[match.ats]} board name in that URL.` };
   }
   return { ats: match.ats, token: match.token };
 }
@@ -101,5 +94,5 @@ export async function probeBoard(
 
   if (emptyBoard) return { ok: true, value: { ref: emptyBoard, jobs: [] } };
   if (firstError) return firstError;
-  return failure("not_found", `No Greenhouse, Lever, Ashby or Workable board named "${slug}"`);
+  return failure("not_found", `No ${atsNameList("or")} board named "${slug}"`);
 }

@@ -10,6 +10,7 @@ import {
   matchesTarget,
   normalizeExcludedWord,
   normalizeTitle,
+  prepareExcludedWords,
   type LocationClass,
 } from "../src/core/match/rules";
 
@@ -212,6 +213,21 @@ describe("excluded words", () => {
     expect(normalizeExcludedWord("   ")).toBeNull();
     expect(normalizeExcludedWord("x".repeat(MAX_EXCLUDED_WORD_LENGTH))).toBe("x".repeat(MAX_EXCLUDED_WORD_LENGTH));
     expect(normalizeExcludedWord("x".repeat(MAX_EXCLUDED_WORD_LENGTH + 1))).toBeNull();
+  });
+
+  it("canonicalizes to space-joined tokens", () => {
+    expect(normalizeExcludedWord("  Security   CLEARANCE ")).toBe("security clearance");
+    expect(normalizeExcludedWord("On-Call")).toBe("on call");
+    expect(normalizeExcludedWord("C#")).toBe("c#");
+    expect(normalizeExcludedWord("-- !! --")).toBeNull();
+  });
+
+  it("matches a prepared list the same as raw words", () => {
+    const prepared = prepareExcludedWords(["on call", "c#", "!!"]);
+    expect(prepared).toEqual([["on", "call"], ["c#"]]);
+    expect(findExcludedWord("Weekly on-call rotation", prepared)).toBe("on call");
+    expect(findExcludedWord("We use C# daily", prepared)).toBe("c#");
+    expect(findExcludedWord("Nothing here", prepared)).toBeNull();
   });
 
   it("matches whole words case-insensitively", () => {

@@ -251,19 +251,24 @@ describe("/exclude", () => {
 
   it("supports phrases and removal", async () => {
     await send("/exclude add security   clearance");
-    await send("/exclude add on-call");
-    expect(await send("/exclude remove security clearance")).not.toContain("security clearance");
-    expect((await store.getSettings()).excludedWords).toEqual(["on-call"]);
+    await send("/exclude add On-Call");
+    expect((await store.getSettings()).excludedWords).toEqual(["security clearance", "on call"]);
+    expect(await send("/exclude remove Security-Clearance")).not.toContain("security clearance");
+    expect((await store.getSettings()).excludedWords).toEqual(["on call"]);
   });
 
   it("rejects empty and overlong words", async () => {
     expect(await send("/exclude add")).toContain("Usage");
     expect(await send(`/exclude add ${"x".repeat(41)}`)).toContain("Usage");
+    expect(await send("/exclude add <>")).toContain("Usage");
     expect((await store.getSettings()).excludedWords).toEqual([]);
   });
 
-  it("escapes words in the reply", async () => {
-    expect(await send("/exclude add <b>")).toContain("&lt;b&gt;");
+  it("stores the canonical tokens, so markup never reaches the reply", async () => {
+    const reply = await send("/exclude add <b>C#</b>");
+    expect(reply).toContain("• b c# b");
+    expect(reply).not.toContain("<b>C#");
+    expect((await store.getSettings()).excludedWords).toEqual(["b c# b"]);
   });
 
   it("says when the list is empty", async () => {

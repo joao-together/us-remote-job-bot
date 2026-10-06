@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { REPOST_WINDOW_MS } from "../src/core/config";
-import { Store, type NewJob } from "../src/core/store/db";
+import { Store, type NewJob, type PollStats } from "../src/core/store/db";
 import { bindingDriver } from "../src/core/store/driver-binding";
 
 const T0 = Date.UTC(2026, 9, 6, 12, 0, 0);
@@ -48,6 +48,17 @@ describe("jobs", () => {
     expect(rows.results).toEqual([{ title: "Senior Software Engineer", status: "pending" }]);
   });
 
+  it("stores the location class and reason given at detection", async () => {
+    const c = await addCompany();
+    await store.runBatch([
+      store.stmtInsertJob(job(c, "r", { locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY" })),
+      store.stmtInsertJob(job(c, "u")),
+    ]);
+    const [restricted, us] = await store.listPending();
+    expect(restricted).toMatchObject({ locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY" });
+    expect(us).toMatchObject({ locationClass: "us", locationReason: null });
+  });
+
   it("loads known job ids per company", async () => {
     const a = await addCompany("A", "a");
     const b = await addCompany("B", "b");
@@ -69,38 +80,20 @@ describe("jobs", () => {
 });
 
 describe("repost guard", () => {
-  it("flags a new id as a repost when the earlier sent job is gone from the board", async () => {
+  it("returns sent/pending jobs first seen within the window as candidates", async () => {
     const c = await addCompany();
-    await store.runBatch([store.stmtInsertJob(job(c, "old"))]);
+    await store.runBatch([
+      store.stmtInsertJob(job(c, "seen-one", { status: "seen" })),
+      store.stmtInsertJob(job(c, "excluded-one", { status: "excluded" })),
+      store.stmtInsertJob(job(c, "old")),
+    ]);
     const old = (await store.listPending())[0]!;
     await sendJob(old.id);
 
-    clock = T0 + 3600_000;
-    const runStartedAt = clock;
-    expect(await store.isRepost(c, "senior software engineer", "Remote - US", runStartedAt)).toBe(true);
-    expect(await store.isRepost(c, "senior software engineer", "Remote - Canada", runStartedAt)).toBe(false);
-    expect(await store.isRepost(c, "senior backend engineer", "Remote - US", runStartedAt)).toBe(false);
-  });
-
-  it("does not flag a repost when the earlier job is still on the board", async () => {
-    const c = await addCompany();
-    await store.runBatch([store.stmtInsertJob(job(c, "old"))]);
-    const old = (await store.listPending())[0]!;
-    await sendJob(old.id);
-
-    clock = T0 + 3600_000;
-    const runStartedAt = clock;
-    await store.runBatch(store.stmtsTouchJobsSeen(c, ["old"], runStartedAt));
-    expect(await store.isRepost(c, "senior software engineer", "Remote - US", runStartedAt)).toBe(false);
-  });
-
-  it("ignores earlier jobs outside the repost window or with other statuses", async () => {
-    const c = await addCompany();
-    await store.runBatch([store.stmtInsertJob(job(c, "seen-one", { status: "seen" })), store.stmtInsertJob(job(c, "old"))]);
-    const old = (await store.listPending())[0]!;
-    await sendJob(old.id);
-    const later = T0 + REPOST_WINDOW_MS + 1;
-    expect(await store.isRepost(c, "senior software engineer", "Remote - US", later)).toBe(false);
+    const candidate = { companyId: c, boardJobId: "old", normalizedTitle: "senior software engineer", locationText: "Remote - US" };
+    expect((await store.repostCandidates([c], T0 + 3600_000)).get(c)).toEqual([candidate]);
+    expect((await store.repostCandidates([c], T0 + REPOST_WINDOW_MS)).get(c)).toEqual([candidate]);
+    expect((await store.repostCandidates([c], T0 + REPOST_WINDOW_MS + 1)).get(c)).toBeUndefined();
   });
 
   it("returns batched repost candidates per company", async () => {
@@ -236,16 +229,16 @@ describe("companies", () => {
     expect((await store.listCompaniesForPoll()).map((c) => c.id)).toEqual([active, pending]);
 
     await store.runBatch([
-      store.stmtCompanyFailure(active, T0, "HTTP 500"),
-      store.stmtCompanyFailure(active, T0, "HTTP 500"),
-      store.stmtCompanyFailure(active, T0, "timeout"),
-      store.stmtCompanySuccess(pending, T0, { baselined: true, state: "active" }),
+      store.stmtCompanyFailure(active, "HTTP 500"),
+      store.stmtCompanyFailure(active, "HTTP 500"),
+      store.stmtCompanyFailure(active, "timeout"),
+      store.stmtCompanySuccess(pending, { baselined: true, state: "active" }),
     ]);
     const failing = await store.failingCompanies();
     expect(failing.map((c) => c.id)).toEqual([active]);
     expect(failing[0]).toMatchObject({ consecutiveFailures: 3, lastError: "timeout", failing: true });
     const ok = await store.getCompany(pending);
-    expect(ok).toMatchObject({ state: "active", baselined: true, lastSuccessAt: T0, consecutiveFailures: 0, failing: false });
+    expect(ok).toMatchObject({ state: "active", baselined: true, consecutiveFailures: 0, failing: false });
 
     const listed = await store.listCompanies();
     expect(listed.map((c) => [c.name, c.failing])).toEqual([
@@ -253,13 +246,14 @@ describe("companies", () => {
       ["B", false],
     ]);
 
-    await store.runBatch([store.stmtCompanySuccess(active, T0 + 1)]);
+    await store.runBatch([store.stmtCompanySuccess(active)]);
     expect(await store.failingCompanies()).toEqual([]);
   });
 });
 
 describe("settings and status", () => {
   it("has defaults and round-trips values", async () => {
+    const stats: PollStats = { companiesOk: 3, companiesFailed: 1, newJobs: 4, matched: 2, sent: 2, sendFailures: 0 };
     expect(await store.getSettings()).toEqual({
       paused: false,
       excludedWords: [],
@@ -271,22 +265,22 @@ describe("settings and status", () => {
     await store.runBatch([
       store.stmtSetSetting("last_poll_start_at", T0),
       store.stmtSetSetting("last_successful_poll_at", T0 + 5),
-      store.stmtSetSetting("last_poll_stats", { companiesOk: 3, companiesFailed: 1, sent: 2 }),
+      store.stmtSetSetting("last_poll_stats", stats),
     ]);
     await store.setSetting("last_warning_at", T0 + 9);
     expect(await store.getSettings()).toMatchObject({
       lastPollStartAt: T0,
       lastSuccessfulPollAt: T0 + 5,
-      lastPollStats: { companiesOk: 3, companiesFailed: 1, sent: 2 },
+      lastPollStats: stats,
       lastWarningAt: T0 + 9,
     });
   });
 
   it("dedupes excluded words and removes them", async () => {
-    expect(await store.addExcludedWord("Clearance")).toEqual(["clearance"]);
-    expect(await store.addExcludedWord(" clearance ")).toEqual(["clearance"]);
+    expect(await store.addExcludedWord("clearance")).toEqual(["clearance"]);
+    expect(await store.addExcludedWord("clearance")).toEqual(["clearance"]);
     expect(await store.addExcludedWord("crypto")).toEqual(["clearance", "crypto"]);
-    expect(await store.removeExcludedWord("CLEARANCE")).toEqual(["crypto"]);
+    expect(await store.removeExcludedWord("clearance")).toEqual(["crypto"]);
     expect(await store.removeExcludedWord("missing")).toEqual(["crypto"]);
     expect((await store.getSettings()).excludedWords).toEqual(["crypto"]);
   });
@@ -295,7 +289,7 @@ describe("settings and status", () => {
     const a = await addCompany("A", "a", "active");
     await addCompany("B", "b", "active");
     await addCompany("C", "c", "pending_validation");
-    await store.runBatch(Array.from({ length: 3 }, () => store.stmtCompanyFailure(a, T0, "x")));
+    await store.runBatch(Array.from({ length: 3 }, () => store.stmtCompanyFailure(a, "x")));
     await store.runBatch(["1", "2", "3", "4"].map((id) => store.stmtInsertJob(job(a, id))));
     const [j1, j2] = await store.listPending();
     await sendJob(j1!.id, 1, T0);

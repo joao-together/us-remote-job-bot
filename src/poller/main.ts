@@ -2,6 +2,7 @@
 import { Store } from "../core/store/db";
 import { httpDriver } from "../core/store/driver-http";
 import { TelegramClient } from "../core/telegram/client";
+import { errorMessage, sleep } from "../core/util";
 import { runPoll } from "./run";
 
 function requireEnv(name: string): string {
@@ -25,7 +26,7 @@ async function main(): Promise<void> {
     telegram,
     ownerId,
     now: Date.now,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    sleep,
   });
 
   console.log(
@@ -36,6 +37,6 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   // Driver and Telegram errors are already token-redacted.
-  console.error(`poll failed: ${err instanceof Error ? err.message : String(err)}`);
+  console.error(`poll failed: ${errorMessage(err)}`);
   process.exit(1);
 });

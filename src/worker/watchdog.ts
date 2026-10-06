@@ -1,5 +1,5 @@
 import { WATCHDOG_FAILING_SHARE, WATCHDOG_REWARN_MS, WATCHDOG_STALE_MS } from "../core/config";
-import { type CompanyRow, type Settings, type StatusCounts, Store, utcMidnight } from "../core/store/db";
+import { type CompanyRow, type PollStats, type Settings, type StatusCounts, Store, utcMidnight } from "../core/store/db";
 import { TelegramError, type TelegramClient } from "../core/telegram/client";
 import { escapeHtml } from "../core/telegram/format";
 
@@ -87,7 +87,7 @@ export function formatStatus({ settings, counts, failing, now }: StatusInput): s
     `Jobs sent today: ${counts.sentToday}`,
     `Jobs waiting to send: ${counts.pending}`,
   );
-  const stats = settings.lastPollStats;
+  const stats: PollStats | undefined = settings.lastPollStats;
   if (stats) {
     lines.push(
       `Last poll: ${num(stats.companiesOk)} boards ok, ${num(stats.companiesFailed)} failed, ${num(stats.sent)} jobs sent`,

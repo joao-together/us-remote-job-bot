@@ -7,8 +7,6 @@ CREATE TABLE companies (
   state TEXT NOT NULL DEFAULT 'pending_validation'
     CHECK (state IN ('active', 'pending_validation', 'inactive')),
   baselined INTEGER NOT NULL DEFAULT 0,
-  last_checked_at INTEGER,
-  last_success_at INTEGER,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at INTEGER NOT NULL,
@@ -24,6 +22,7 @@ CREATE TABLE jobs (
   normalized_title TEXT NOT NULL,
   location_text TEXT NOT NULL DEFAULT '',
   location_class TEXT,
+  location_reason TEXT,
   apply_url TEXT NOT NULL,
   posted_at INTEGER,
   salary_text TEXT,
@@ -33,7 +32,6 @@ CREATE TABLE jobs (
   user_action TEXT CHECK (user_action IN ('applied', 'skipped')),
   action_at INTEGER,
   first_seen_at INTEGER NOT NULL,
-  last_seen_on_board_at INTEGER NOT NULL,
   sent_at INTEGER,
   UNIQUE (company_id, board_job_id)
 );

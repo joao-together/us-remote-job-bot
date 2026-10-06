@@ -1,6 +1,7 @@
 import { Store } from "../core/store/db";
 import { bindingDriver } from "../core/store/driver-binding";
 import { TelegramClient, TelegramError } from "../core/telegram/client";
+import { redactSecrets } from "../core/util";
 import { handleUpdate } from "./commands";
 import type { WorkerEnv } from "./env";
 import { runWatchdog } from "./watchdog";
@@ -52,7 +53,7 @@ export default {
       });
     } catch (err) {
       const detail = err instanceof TelegramError ? `${err.status} ${err.description}` : err instanceof Error ? `${err.name}: ${err.message}` : "unknown";
-      console.error(`webhook: handling update failed: ${detail}`);
+      console.error(`webhook: handling update failed: ${redactSecrets(detail, env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_WEBHOOK_SECRET)}`);
     }
     return ok();
   },

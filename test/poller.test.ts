@@ -210,6 +210,26 @@ describe("failures", () => {
     expect((await t.store.getSettings()).lastSuccessfulPollAt).toBe(t.clock.now - HOUR);
   });
 
+  it("writes a healthy company's row only when its state changes", async () => {
+    boards.lever.acme = [];
+    const acme = await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    expect(await companyRow(acme)).toMatchObject({ baselined: 1, consecutive_failures: 0 });
+
+    // A marker no success write would keep: proves the steady-state run skipped the company row.
+    await env.DB.prepare("UPDATE companies SET last_error = 'marker' WHERE id = ?").bind(acme).run();
+    await poll();
+    expect((await companyRow(acme))!.last_error).toBe("marker");
+
+    // After a failure, the next success clears the count and error.
+    boards.timeout.add("acme");
+    await poll();
+    expect(await companyRow(acme)).toMatchObject({ consecutive_failures: 1 });
+    boards.timeout.delete("acme");
+    await poll();
+    expect(await companyRow(acme)).toMatchObject({ consecutive_failures: 0, last_error: null });
+  });
+
   it("does not record a successful poll when every company fails", async () => {
     boards.timeout.add("acme");
     await addCompany(t.store, "Acme", "lever", "acme");
@@ -271,8 +291,12 @@ describe("helpers", () => {
     expect(peak).toBe(3);
   });
 
-  it("redactError strips bot tokens and caps length", () => {
-    expect(redactError("fail https://api.telegram.org/bot123:ABC-def/sendMessage")).not.toContain("123:ABC");
+  it("redactError strips bot tokens and known secrets and caps length", () => {
+    expect(redactError("fail https://api.telegram.org/bot123:ABC-def/sendMessage")).toBe(
+      "fail https://api.telegram.org/bot[redacted]/sendMessage",
+    );
+    expect(redactError("GET /x?token=abc&y=1")).toBe("GET /x?token=[redacted]&y=1");
+    expect(redactError("auth s3cr3t failed", "s3cr3t", "")).toBe("auth [redacted] failed");
     expect(redactError("x".repeat(1000))).toHaveLength(200);
   });
 

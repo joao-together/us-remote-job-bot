@@ -20,7 +20,7 @@ export function tokenize(text: string): string[] {
   return text.toLowerCase().match(/[\p{L}\p{N}]+[+#]*/gu) ?? [];
 }
 
-function indexOfPhrase(tokens: string[], phrase: string[], from = 0): number {
+function indexOfPhrase(tokens: readonly string[], phrase: readonly string[], from = 0): number {
   if (phrase.length === 0) return -1;
   outer: for (let i = from; i + phrase.length <= tokens.length; i++) {
     for (let j = 0; j < phrase.length; j++) {
@@ -31,50 +31,62 @@ function indexOfPhrase(tokens: string[], phrase: string[], from = 0): number {
   return -1;
 }
 
-function hasAny(tokens: string[], phrases: readonly string[]): boolean {
-  return phrases.some((p) => indexOfPhrase(tokens, p.split(" ")) >= 0);
+/** A phrase pre-split into tokens at module load, so matching never re-splits. */
+type Phrases = readonly (readonly string[])[];
+
+function phrases(list: readonly string[]): Phrases {
+  return list.map((p) => p.split(" "));
+}
+
+function hasAny(tokens: string[], list: Phrases): boolean {
+  return list.some((p) => indexOfPhrase(tokens, p) >= 0);
 }
 
 // ---------- Role ----------
 
-const ROLE_NOUNS = [
+const ROLE_NOUNS = phrases([
   "engineer", "engineers", "developer", "developers", "swe", "sde", "programmer",
   "tech lead", "technical lead", "team lead", "engineering lead",
-];
-const SELF_EXPLANATORY_NOUNS = ["developer", "developers", "swe", "sde", "programmer"];
+]);
+const SELF_EXPLANATORY_NOUNS = phrases(["developer", "developers", "swe", "sde", "programmer"]);
 
-const ROLE_HARD_REJECTS = [
+const ROLE_HARD_REJECTS = phrases([
   "sales", "presales", "pre sales", "solutions", "support", "customer engineer", "customer success",
   "customer support", "customer facing", "field engineer", "field application", "field applications",
   "manager", "management", "director", "head of", "vp", "vice president", "chief", "cto",
   "recruiter", "recruiting", "in test", "sdet", "qa", "quality assurance", "test automation",
   "developer relations", "advocate", "evangelist", "consultant", "implementation",
   "electrical", "mechanical", "civil", "chemical", "manufacturing", "structural",
-];
+]);
 
 /** Product-software areas that win over a specialization ("Full Stack Engineer (AI)"). */
-const STRONG_CONTEXT = [
+const STRONG_CONTEXT = phrases([
   "backend", "back end", "frontend", "front end", "full stack", "fullstack", "mobile", "ios", "android",
   "web", "product engineer", "product engineers",
-];
+]);
 
 /** Software hints that count only when no specialization is named. */
-const WEAK_CONTEXT = [
+const WEAK_CONTEXT = phrases([
   "software", "platform", "application", "applications", "product", "ui", "api", "saas",
   "java", "python", "ruby", "rails", "go", "golang", "javascript", "typescript", "js", "node", "react",
   "angular", "vue", "php", "net", "dotnet", "c#", "c++", "scala", "kotlin", "swift", "rust", "elixir",
   "django", "flutter",
-];
+]);
 
-const SPECIALIZATIONS = [
+const SPECIALIZATIONS = phrases([
   "data", "analytics", "etl", "database", "ml", "machine learning", "ai", "artificial intelligence", "llm",
   "mlops", "computer vision", "nlp", "devops", "dev ops", "sre", "site reliability", "reliability",
   "security", "appsec", "test", "testing", "quality", "hardware", "network", "networking", "infrastructure",
   "infra", "embedded", "firmware",
-];
+]);
+
+const SENIOR_MARKERS = phrases(["senior", "sr", "snr"]);
 
 export function isSoftwareEngineeringRole(title: string): boolean {
-  const t = tokenize(title);
+  return isSoftwareEngineeringTokens(tokenize(title));
+}
+
+function isSoftwareEngineeringTokens(t: string[]): boolean {
   if (!hasAny(t, ROLE_NOUNS)) return false;
   if (hasAny(t, ROLE_HARD_REJECTS)) return false;
   if (hasAny(t, STRONG_CONTEXT)) return true;
@@ -84,16 +96,19 @@ export function isSoftwareEngineeringRole(title: string): boolean {
 
 // ---------- Seniority ----------
 
-const SENIORITY_REJECTS = [
+const SENIORITY_REJECTS = phrases([
   "staff", "principal", "junior", "jr", "intern", "interns", "internship", "graduate", "grad",
   "new grad", "apprentice", "apprenticeship", "trainee", "entry", "early career",
-];
-const LEVEL_MARKERS = ["mid", "i", "ii", "iii", "iv", "1", "2", "3", "4"];
+]);
+const LEVEL_MARKERS = phrases(["mid", "i", "ii", "iii", "iv", "1", "2", "3", "4"]);
 
 export function isSeniorTitle(title: string): boolean {
-  const t = tokenize(title);
+  return isSeniorTokens(tokenize(title));
+}
+
+function isSeniorTokens(t: string[]): boolean {
   if (hasAny(t, SENIORITY_REJECTS)) return false;
-  if (hasAny(t, ["senior", "sr", "snr"])) return true;
+  if (hasAny(t, SENIOR_MARKERS)) return true;
   return t.includes("lead") && !hasAny(t, LEVEL_MARKERS);
 }
 
@@ -111,14 +126,18 @@ const STATES: Record<string, string> = {
   washington: "WA", "west virginia": "WV", wisconsin: "WI", wyoming: "WY", "district of columbia": "DC",
 };
 const STATE_CODES = new Set([...Object.values(STATES), "DC"]);
+const STATE_PHRASES = Object.entries(STATES).map(([name, code]) => ({ phrase: name.split(" "), code }));
+const WASHINGTON_DC = phrases(["washington dc"]);
+const WEST_VIRGINIA = phrases(["west virginia"]);
+const CANADA = phrases(["canada"]);
 
-const US_TERMS = ["us", "usa", "united states", "united states of america", "north america", "stateside"];
-const US_CITIES = [
+const US_TERMS = phrases(["us", "usa", "united states", "united states of america", "north america", "stateside"]);
+const US_CITIES = phrases([
   "nyc", "san francisco", "sf", "bay area", "silicon valley", "seattle", "austin", "boston", "chicago",
   "los angeles", "denver", "atlanta", "miami", "dallas", "houston", "san diego", "san jose", "philadelphia",
   "portland", "pittsburgh", "minneapolis", "salt lake city", "raleigh", "nashville", "phoenix",
-];
-const NON_US_TERMS = [
+]);
+const NON_US_TERMS = phrases([
   "emea", "apac", "latam", "anz", "dach", "nordics", "benelux", "cee", "europe", "european", "eu", "uk",
   "united kingdom", "england", "scotland", "wales", "ireland", "latin america", "south america",
   "central america", "asia", "africa", "middle east", "canada", "ontario", "quebec", "british columbia",
@@ -132,10 +151,10 @@ const NON_US_TERMS = [
   "madrid", "barcelona", "lisbon", "warsaw", "krakow", "zurich", "stockholm", "toronto", "vancouver",
   "montreal", "bangalore", "bengaluru", "hyderabad", "pune", "chennai", "sydney", "melbourne", "tokyo",
   "tel aviv", "sao paulo", "buenos aires", "mexico city",
-];
+]);
 const CANADIAN_CODES = new Set(["ON", "BC", "QC", "AB", "MB", "SK", "NS", "NB", "NL", "PE"]);
-const BROAD_REGIONS = ["americas", "worldwide", "anywhere", "global", "globally"];
-const ONSITE_TERMS = ["hybrid", "onsite", "on site", "in office", "office based"];
+const BROAD_REGIONS = phrases(["americas", "worldwide", "anywhere", "global", "globally"]);
+const ONSITE_TERMS = phrases(["hybrid", "onsite", "on site", "in office", "office based"]);
 
 const RANK: Record<LocationClass, number> = { us: 4, us_restricted: 3, ambiguous: 2, non_us: 1, onsite: 0 };
 
@@ -173,15 +192,15 @@ function gatherEvidence(segment: string, countryCodes: string[]): Evidence {
     (countryCodes.length > 0 && !countryCodes.includes("US"));
 
   const fullStates: string[] = [];
-  for (const [name, code] of Object.entries(STATES)) {
-    if (hasAny(t, [name])) fullStates.push(code);
+  for (const { phrase, code } of STATE_PHRASES) {
+    if (indexOfPhrase(t, phrase) >= 0) fullStates.push(code);
   }
   // "Washington DC" names DC, not Washington state; "West Virginia" isn't Virginia.
-  if (hasAny(t, ["washington dc"])) remove(fullStates, "WA");
-  if (hasAny(t, ["west virginia"])) remove(fullStates, "VA");
+  if (hasAny(t, WASHINGTON_DC)) remove(fullStates, "WA");
+  if (hasAny(t, WEST_VIRGINIA)) remove(fullStates, "VA");
 
   let codeStates = raw.filter((w) => w.length === 2 && STATE_CODES.has(w));
-  if (nonUs && codeStates.includes("CA") && hasAny(t, ["canada"])) codeStates = codeStates.filter((c) => c !== "CA");
+  if (nonUs && codeStates.includes("CA") && hasAny(t, CANADA)) codeStates = codeStates.filter((c) => c !== "CA");
 
   const states = [...new Set([...fullStates, ...codeStates])];
   return {
@@ -251,18 +270,31 @@ export function locationPasses(cls: LocationClass): boolean {
 
 // ---------- Excluded words ----------
 
+/**
+ * Canonical stored form of an excluded word: its tokens joined by single spaces, so it is exactly
+ * what matching compares. Null when it has no letters or digits or is too long.
+ */
 export function normalizeExcludedWord(word: string): string | null {
-  const w = word.trim().replace(/\s+/g, " ").toLowerCase();
+  const w = tokenize(word).join(" ");
   if (w === "" || w.length > MAX_EXCLUDED_WORD_LENGTH) return null;
   return w;
 }
 
-/** Returns the first word/phrase found as whole tokens in text, or null. Words with no letters or digits never match. */
-export function findExcludedWord(text: string, words: string[]): string | null {
+/** Tokenizes an excluded-word list once, for repeated findExcludedWord calls. Empty phrases are dropped. */
+export function prepareExcludedWords(words: readonly string[]): string[][] {
+  return words.map(tokenize).filter((p) => p.length > 0);
+}
+
+/**
+ * Returns the first word/phrase found as whole tokens in text, or null. Words with no letters or digits
+ * never match. Accepts raw words (returned as given) or a prepareExcludedWords list (returned as the
+ * space-joined tokens, which is the canonical stored form).
+ */
+export function findExcludedWord(text: string, words: readonly string[] | readonly (readonly string[])[]): string | null {
   const tokens = tokenize(text);
   for (const word of words) {
-    const phrase = tokenize(word);
-    if (phrase.length > 0 && indexOfPhrase(tokens, phrase) >= 0) return word;
+    const phrase = typeof word === "string" ? tokenize(word) : word;
+    if (phrase.length > 0 && indexOfPhrase(tokens, phrase) >= 0) return typeof word === "string" ? word : phrase.join(" ");
   }
   return null;
 }
@@ -274,8 +306,9 @@ export function normalizeTitle(title: string): string {
 }
 
 export function matchesTarget(job: MatchInput): MatchResult {
-  if (!isSoftwareEngineeringRole(job.title)) return { pass: false, reason: "Not a software engineering role" };
-  if (!isSeniorTitle(job.title)) return { pass: false, reason: "Not a senior title" };
+  const title = tokenize(job.title);
+  if (!isSoftwareEngineeringTokens(title)) return { pass: false, reason: "Not a software engineering role" };
+  if (!isSeniorTokens(title)) return { pass: false, reason: "Not a senior title" };
   const location = classifyLocation(job);
   if (!locationPasses(location.cls)) {
     return { pass: false, reason: location.reason ?? `Location is ${location.cls}` };

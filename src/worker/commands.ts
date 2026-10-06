@@ -1,10 +1,11 @@
-import { ATS_KINDS, type AtsKind } from "../core/ats/types";
+import { ATS_KINDS, ATS_NAMES, type AtsKind } from "../core/ats/types";
 import { parseBoardInput, SLUG_PATTERN } from "../core/ats/detect";
 import { MAX_EXCLUDED_WORD_LENGTH } from "../core/config";
 import { normalizeExcludedWord } from "../core/match/rules";
 import type { CompanyRow, Store } from "../core/store/db";
 import type { TelegramClient } from "../core/telegram/client";
-import { escapeHtml, jobKeyboard, parseCallbackData } from "../core/telegram/format";
+import { isRecord } from "../core/ats/text";
+import { escapeHtml, jobKeyboard, parseCallbackData, truncate } from "../core/telegram/format";
 import { buildStatus } from "./watchdog";
 
 const MAX_MESSAGE_LENGTH = 4000;
@@ -38,19 +39,17 @@ interface CallbackQuery {
   data?: string;
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
-
 function asChat(v: unknown): Chat | undefined {
-  if (!isObject(v) || typeof v.id !== "number" || typeof v.type !== "string") return undefined;
+  if (!isRecord(v) || typeof v.id !== "number" || typeof v.type !== "string") return undefined;
   return { id: v.id, type: v.type };
 }
 
 function senderId(v: unknown): number | undefined {
-  return isObject(v) && typeof v.id === "number" ? v.id : undefined;
+  return isRecord(v) && typeof v.id === "number" ? v.id : undefined;
 }
 
 function asMessage(v: unknown): Message | undefined {
-  if (!isObject(v) || typeof v.message_id !== "number") return undefined;
+  if (!isRecord(v) || typeof v.message_id !== "number") return undefined;
   const chat = asChat(v.chat);
   if (!chat) return undefined;
   const fromId = senderId(v.from);
@@ -63,7 +62,7 @@ function asMessage(v: unknown): Message | undefined {
 }
 
 function asCallbackQuery(v: unknown): CallbackQuery | undefined {
-  if (!isObject(v) || typeof v.id !== "string") return undefined;
+  if (!isRecord(v) || typeof v.id !== "string") return undefined;
   const fromId = senderId(v.from);
   if (fromId === undefined) return undefined;
   return {
@@ -80,7 +79,7 @@ function isOwnerInPrivate(fromId: number | undefined, chat: Chat | undefined, ow
 
 /** Handles one Telegram update. Anything not from the owner in a private chat is ignored. */
 export async function handleUpdate(update: unknown, deps: CommandDeps): Promise<void> {
-  if (!isObject(update)) return;
+  if (!isRecord(update)) return;
 
   const callback = asCallbackQuery(update.callback_query);
   if (callback) {
@@ -118,7 +117,7 @@ async function handleCallback(cb: CallbackQuery, { store, telegram, now }: Comma
 const HELP = [
   "<b>US remote job alerts</b>",
   "",
-  "/add &lt;board link&gt; — watch a company (Greenhouse, Lever, Ashby, Workable)",
+  `/add &lt;board link&gt; — watch a company (${ATS_KINDS.map((k) => ATS_NAMES[k]).join(", ")})`,
   "/remove &lt;name&gt; — stop watching a company",
   "/companies — list watched companies",
   "/exclude add|remove &lt;word&gt; — skip jobs mentioning a word",
@@ -279,8 +278,6 @@ async function excludeCommand(args: string, { store }: CommandDeps, reply: Reply
   return reply(`<b>Excluded words</b>\n${words.map((w) => `• ${escapeHtml(w)}`).join("\n")}`);
 }
 
-const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
-
 const isoDate = (at: number | null) => (at === null ? "?" : new Date(at).toISOString().slice(0, 10));
 
 async function appliedCommand({ store }: CommandDeps, reply: Reply): Promise<void> {
@@ -289,7 +286,7 @@ async function appliedCommand({ store }: CommandDeps, reply: Reply): Promise<voi
     return reply("You haven't marked any jobs as applied yet. Tap ✅ Applied on an alert to track it here.");
   }
   const entries = jobs.map(
-    (j, i) => `${i + 1}. ${escapeHtml(clip(j.title, 200))} — ${escapeHtml(clip(j.companyName, 100))} (${isoDate(j.actionAt)})\n${escapeHtml(j.applyUrl)}`,
+    (j, i) => `${i + 1}. ${escapeHtml(truncate(j.title, 200))} — ${escapeHtml(truncate(j.companyName, 100))} (${isoDate(j.actionAt)})\n${escapeHtml(j.applyUrl)}`,
   );
   for (const part of chunkLines([`<b>Applied (last ${jobs.length})</b>`, ...entries], MAX_MESSAGE_LENGTH)) await reply(part);
 }

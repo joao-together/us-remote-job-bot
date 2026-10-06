@@ -1,13 +1,15 @@
 import { POSTED_AGO_MAX_MS } from "../config";
+import type { LocationClass } from "../match/rules";
 
-export type LocationClass = "us" | "us_restricted" | "ambiguous";
+/** The location classes that can reach an alert (the others fail matching). */
+export type AlertLocationClass = Extract<LocationClass, "us" | "us_restricted" | "ambiguous">;
 export type JobAction = "applied" | "skipped";
 
 export interface JobAlert {
   title: string;
   companyName: string;
   locationText: string;
-  locationClass: LocationClass;
+  locationClass: AlertLocationClass;
   locationReason?: string;
   salaryText?: string;
   postedAt?: number;
@@ -32,7 +34,8 @@ export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function truncate(s: string, max: number): string {
+/** Trims and cuts to at most `max` characters (code points), ending with "…" when cut. */
+export function truncate(s: string, max: number): string {
   const chars = Array.from(s.trim());
   return chars.length > max ? chars.slice(0, max - 1).join("") + "…" : chars.join("");
 }
