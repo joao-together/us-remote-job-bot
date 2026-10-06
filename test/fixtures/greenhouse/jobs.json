@@ -1,0 +1,91 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/gitlab/jobs/8615811002",
+      "id": 8615811002,
+      "internal_job_id": 6441048002,
+      "location": {
+        "name": "Remote, US"
+      },
+      "updated_at": "2026-09-29T10:38:50-04:00",
+      "requisition_id": "6576",
+      "title": "Director, Strategic Partnerships",
+      "company_name": "GitLab",
+      "first_published": "2026-07-02T13:43:11-04:00",
+      "language": "en"
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/gitlab/jobs/8626772002",
+      "id": 8626772002,
+      "internal_job_id": 6445355002,
+      "location": {
+        "name": "Bangalore, India"
+      },
+      "updated_at": "2026-09-29T10:38:50-04:00",
+      "requisition_id": "6633",
+      "title": "Director, Engineering, Platform Operations & Productivity",
+      "company_name": "GitLab",
+      "first_published": "2026-07-13T12:57:20-04:00",
+      "language": "en"
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/gitlab/jobs/8857185002",
+      "id": 8857185002,
+      "internal_job_id": 6545717002,
+      "location": {
+        "name": "Remote, Canada; Remote, United States"
+      },
+      "updated_at": "2026-09-30T15:00:43-04:00",
+      "requisition_id": "7064",
+      "title": "Associate Renewals Manager   ",
+      "company_name": "GitLab",
+      "first_published": "2026-09-29T18:06:03-04:00",
+      "language": "en"
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/gitlab/jobs/8857611002",
+      "id": 8857611002,
+      "internal_job_id": 6545917002,
+      "location": {
+        "name": "United States"
+      },
+      "updated_at": "2026-09-30T19:45:18-04:00",
+      "requisition_id": "7069",
+      "title": "Associate Renewals Manager, India",
+      "company_name": "GitLab",
+      "first_published": "2026-09-30T19:45:18-04:00",
+      "language": "en"
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/gitlab/jobs/8859694002",
+      "id": 8859694002,
+      "internal_job_id": 6546747002,
+      "location": {
+        "name": "Hybrid - New York, NY"
+      },
+      "updated_at": "2026-10-05T16:47:52-04:00",
+      "requisition_id": "7083",
+      "title": "Associate Revenue Operations Manager, India",
+      "company_name": "GitLab",
+      "first_published": "2026-10-01T20:06:10-04:00",
+      "language": "en"
+    },
+    {
+      "absolute_url": "http://job-boards.greenhouse.io/gitlab/jobs/8698314002",
+      "id": 8698314002,
+      "internal_job_id": 6475720002,
+      "location": {
+        "name": "Remote, US"
+      },
+      "updated_at": "2026-09-29T10:38:50-04:00",
+      "requisition_id": "6800",
+      "title": "Backend Engineer, AI Engineering: Duo Chat",
+      "company_name": "GitLab",
+      "first_published": "2026-08-20T17:35:39-04:00",
+      "language": "en"
+    }
+  ],
+  "meta": {
+    "total": 6
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "id": 6125041,
+  "shortcode": "F88446C814",
+  "title": "Senior Open-Source Python Engineer, ML Developer Tools - US Remote",
+  "remote": true,
+  "location": {
+    "country": "United States",
+    "countryCode": "US",
+    "city": "",
+    "region": null
+  },
+  "locations": [
+    {
+      "country": "United States",
+      "countryCode": "US",
+      "city": "",
+      "region": null,
+      "hidden": true
+    }
+  ],
+  "state": "published",
+  "isInternal": false,
+  "code": "",
+  "published": "2026-09-21T00:00:00.000Z",
+  "type": "full",
+  "language": "en",
+  "department": [
+    "Product"
+  ],
+  "accountUid": "940cf17f-c078-40ac-95e8-07704e754048",
+  "approvalStatus": "approved",
+  "workplace": "remote",
+  "description": "<p>At Hugging Face, we're on a journey to democratize good AI. We are building the fastest growing platform for AI builders with over 11 million users who collectively shared over 4 million models, 1 million datasets &amp; 1.5 million Gradio apps. Our open-source libraries have more than 700,000 stars on Github.</p><p></p><p><strong>About the Role</strong></p><p>Roles at Hugging Face are very flui</p>",
+  "requirements": "<p></p><p>If you love open-source, are passionate about making machine learning more accessible, have experience building Python frameworks, and want to contribute to some of the fastest-growing libraries in the ML ecosystem, then we can't wait to see your application!</p><p><strong>What you'll need</strong></p><ul><li>Bachelor's degree or equivalent in Computer Science or a related field</li><li></p>",
+  "benefits": "<p><strong>More about Hugging Face</strong></p><p><strong>We are actively working to build a culture that values diversity, equity, and inclusivity</strong>. We are intentionally building a workplace where people feel respected and supported—regardless of who you are or where you come from. We believe this is foundational to building a great company and community. Hugging Face is an equal opportun</p>"
+}

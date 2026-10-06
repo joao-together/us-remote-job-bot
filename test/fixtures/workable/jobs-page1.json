@@ -1,0 +1,105 @@
+{
+  "total": 6,
+  "results": [
+    {
+      "id": 6125026,
+      "shortcode": "DB4D7C0EC8",
+      "title": "Senior Open-Source Python Engineer, ML Developer Tools - EMEA Remote",
+      "remote": true,
+      "location": {
+        "country": "France",
+        "countryCode": "FR",
+        "city": "",
+        "region": null
+      },
+      "locations": [
+        {
+          "country": "France",
+          "countryCode": "FR",
+          "city": "",
+          "region": null,
+          "hidden": true
+        }
+      ],
+      "state": "published",
+      "isInternal": false,
+      "code": "",
+      "published": "2026-09-21T00:00:00.000Z",
+      "type": "full",
+      "language": "en",
+      "department": [
+        "Product"
+      ],
+      "accountUid": "940cf17f-c078-40ac-95e8-07704e754048",
+      "approvalStatus": "approved",
+      "workplace": "remote"
+    },
+    {
+      "id": 6125041,
+      "shortcode": "F88446C814",
+      "title": "Senior Open-Source Python Engineer, ML Developer Tools - US Remote",
+      "remote": true,
+      "location": {
+        "country": "United States",
+        "countryCode": "US",
+        "city": "",
+        "region": null
+      },
+      "locations": [
+        {
+          "country": "United States",
+          "countryCode": "US",
+          "city": "",
+          "region": null,
+          "hidden": true
+        }
+      ],
+      "state": "published",
+      "isInternal": false,
+      "code": "",
+      "published": "2026-09-21T00:00:00.000Z",
+      "type": "full",
+      "language": "en",
+      "department": [
+        "Product"
+      ],
+      "accountUid": "940cf17f-c078-40ac-95e8-07704e754048",
+      "approvalStatus": "approved",
+      "workplace": "remote"
+    },
+    {
+      "id": 6074222,
+      "shortcode": "9E2A4C02C7",
+      "title": "Senior Machine Learning Engineer, Voice Agents - EMEA Remote",
+      "remote": true,
+      "location": {
+        "country": "France",
+        "countryCode": "FR",
+        "city": "Paris",
+        "region": "Île-de-France"
+      },
+      "locations": [
+        {
+          "country": "France",
+          "countryCode": "FR",
+          "city": "Paris",
+          "region": "Île-de-France",
+          "hidden": true
+        }
+      ],
+      "state": "published",
+      "isInternal": false,
+      "code": "",
+      "published": "2026-09-02T00:00:00.000Z",
+      "type": "full",
+      "language": "en",
+      "department": [
+        "Science"
+      ],
+      "accountUid": "940cf17f-c078-40ac-95e8-07704e754048",
+      "approvalStatus": "approved",
+      "workplace": "remote"
+    }
+  ],
+  "nextPage": "eyJvZmZzZXQiOjN9"
+}
