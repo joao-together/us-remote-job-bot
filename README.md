@@ -75,7 +75,7 @@ Send `/status` to the bot — it should reply.
 | `TELEGRAM_BOT_TOKEN` | bot token |
 | `OWNER_USER_ID` | your user id |
 
-4. Run *Actions → Poll job boards → Run workflow* once. The first runs record every currently open job **silently** (60 companies per run, so the full list is baselined within ~5 hours); alerts for a company start with jobs posted after its baseline.
+4. Run *Actions → Poll job boards → Run workflow* once. The first runs record every currently open job **silently** (60 companies per run, so the full list is baselined within ~30–60 minutes); alerts for a company start with jobs posted after its baseline.
 
 ## Using the bot
 
