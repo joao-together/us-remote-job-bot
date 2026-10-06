@@ -1,12 +1,12 @@
 # US Remote Job Bot
 
-A private Telegram bot that checks the public job boards of ~280 remote-friendly companies every hour and sends you each new **senior, US-remote software engineering** role, with a direct apply link and ✅ Applied / ❌ Skip buttons.
+A private Telegram bot that checks the public job boards of ~280 remote-friendly companies every 10 minutes and sends you each new **senior, US-remote software engineering** role, with a direct apply link and ✅ Applied / ❌ Skip buttons.
 
 It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sources paid job aggregators scrape) and runs entirely on free tiers:
 
 | Part | Runs on | Does |
 |---|---|---|
-| Poller | GitHub Actions, hourly (private repo) | Fetches boards, matches jobs, sends alerts |
+| Poller | GitHub Actions, every 10 min (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
 | Bot | Cloudflare Worker | Commands, button taps, watchdog warnings |
 | Storage | Cloudflare D1 | Companies, seen jobs, settings |
 
@@ -63,7 +63,7 @@ Send `/status` to the bot — it should reply.
 
 ### 4. Set up the hourly poller
 
-1. Push this repo to a **private** GitHub repository. Private repos get 2,000 free Actions minutes/month (the poller uses ~1–2 min/hour) and don't get auto-disabled after 60 days of inactivity.
+1. Push this repo to a **public** GitHub repository (secrets stay hidden; public repos get unlimited Actions minutes, which a 10-minute schedule needs). The workflow re-enables itself each run so GitHub's 60-day inactivity rule doesn't switch it off. For a private repo, change the cron to every 30 minutes to stay within 2,000 free minutes/month.
 2. Create a Cloudflare API token at *My Profile → API Tokens → Create Token → Custom token* with only **Account → D1 → Edit**.
 3. In the GitHub repo, add these *Settings → Secrets and variables → Actions* secrets:
 

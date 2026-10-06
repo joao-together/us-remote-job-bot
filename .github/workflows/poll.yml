@@ -2,8 +2,8 @@ name: Poll job boards
 
 on:
   schedule:
-    # Off-peak minute; GitHub delays or drops runs at :00.
-    - cron: "17 * * * *"
+    # Every 10 minutes, offset from :00 where GitHub delays or drops runs.
+    - cron: "3-59/10 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -12,11 +12,12 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write # keepalive step re-enables this workflow
 
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,3 +32,10 @@ jobs:
           CF_D1_API_TOKEN: ${{ secrets.CF_D1_API_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           OWNER_USER_ID: ${{ secrets.OWNER_USER_ID }}
+      # GitHub disables scheduled workflows in public repos after 60 days without commits;
+      # re-enabling from a run resets that timer.
+      - name: Keep schedule alive
+        if: github.event_name == 'schedule'
+        run: gh workflow enable poll.yml --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
