@@ -7,6 +7,7 @@ import { decodeEntities, formatMoneyRange, htmlToText } from "../src/core/ats/te
 import type { FetchResult, NormalizedJob } from "../src/core/ats/types";
 import { workable } from "../src/core/ats/workable";
 import { USER_AGENT } from "../src/core/config";
+import { matchesTarget } from "../src/core/match/rules";
 import ashbyBoard from "./fixtures/ashby/job-board.json";
 import ghDetailNoPay from "./fixtures/greenhouse/detail-no-pay.json";
 import ghDetailPay from "./fixtures/greenhouse/detail-pay.json";
@@ -78,8 +79,28 @@ describe("greenhouse", () => {
     expect(byId(jobs, "8857611002")).toMatchObject({ locationText: "United States", remote: "unknown", countryCodes: ["US"] });
     expect(byId(jobs, "8626772002")).toMatchObject({ locationText: "Bangalore, India", remote: "unknown", countryCodes: ["IN"] });
     expect(byId(jobs, "8859694002")).toMatchObject({ remote: "no" });
-    expect(greenhouseRemote("Remote (Hybrid), Austin")).toBe("no");
+    expect(greenhouseRemote("Hybrid - Austin")).toBe("no");
     expect(greenhouseRemote("On-site - Denver")).toBe("no");
+  });
+
+  it("mixed remote and hybrid text is unknown so the per-segment classifier decides", async () => {
+    expect(greenhouseRemote("Remote (Hybrid), Austin")).toBe("unknown");
+    const raw = {
+      jobs: [
+        {
+          id: 1,
+          title: "Senior Software Engineer",
+          absolute_url: "https://job-boards.greenhouse.io/acme/jobs/1",
+          location: { name: "Hybrid - NYC / Remote - US" },
+          updated_at: "2026-10-05T16:47:52-04:00",
+        },
+      ],
+    };
+    const f = fakeFetcher(on("https://boards-api.greenhouse.io/v1/boards/acme/jobs", () => json(raw)));
+    const jobs = unwrap(await greenhouse.listJobs("acme", f));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.remote).toBe("unknown");
+    expect(matchesTarget(jobs[0]!).pass).toBe(true);
   });
 
   it("drops a job whose apply URL is not https", async () => {

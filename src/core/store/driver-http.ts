@@ -1,7 +1,6 @@
-import { DB_BATCH_SIZE } from "../config";
+import { DB_BATCH_SIZE, REQUEST_TIMEOUT_MS } from "../config";
 import type { DbDriver, Statement } from "./driver";
-import { chunk, normalizeParams } from "./driver-binding";
-import { errorMessage, redactSecrets, sleep as defaultSleep } from "../util";
+import { chunk, errorMessage, normalizeParams, redactSecrets, sleep as defaultSleep } from "../util";
 
 export interface HttpDriverOptions {
   accountId: string;
@@ -48,11 +47,19 @@ export function httpDriver(opts: HttpDriverOptions): DbDriver {
         method: "POST",
         headers: { authorization: `Bearer ${opts.apiToken}`, "content-type": "application/json" },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
+      // Network failures and timeouts (TimeoutError/AbortError) are transient: retry with backoff.
       throw new RetryableError(`network error: ${errorMessage(err)}`);
     }
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (err) {
+      // The timeout signal also aborts a slow body read.
+      throw new RetryableError(`network error reading response: ${errorMessage(err)}`);
+    }
     if (res.status === 429 || res.status >= 500) {
       throw new RetryableError(`HTTP ${res.status}: ${text.slice(0, 300)}`);
     }

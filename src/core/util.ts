@@ -18,3 +18,18 @@ export function redactSecrets(text: string, ...secrets: (string | undefined)[]):
   }
   return out;
 }
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** D1 rejects `undefined` and booleans; map them to SQL-friendly values. */
+export function normalizeParams(params: unknown[] | undefined): unknown[] {
+  return (params ?? []).map((p) => (p === undefined ? null : typeof p === "boolean" ? (p ? 1 : 0) : p));
+}

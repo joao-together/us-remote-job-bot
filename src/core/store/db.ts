@@ -2,7 +2,7 @@ import type { AtsKind } from "../ats/types";
 import { FAILING_AFTER_CONSECUTIVE, REPOST_WINDOW_MS } from "../config";
 import type { LocationClass } from "../match/rules";
 import type { DbDriver, Statement } from "./driver";
-import { chunk } from "./driver-binding";
+import { chunk } from "../util";
 
 /** D1 allows at most 100 bound parameters per statement. */
 const MAX_IN_PARAMS = 90;

@@ -274,6 +274,20 @@ describe("pending_validation companies", () => {
     await poll();
     expect(t.telegram.sends).toHaveLength(1);
   });
+
+  it("still activates the company and records stats when the confirmation send fails", async () => {
+    boards.lever.acme = [leverPosting("v1", SENIOR)];
+    const id = await addCompany(t.store, "Acme", "lever", "acme", { state: "pending_validation" });
+    t.telegram.failNext = true;
+
+    await expect(runPoll(t.deps)).resolves.toBeDefined();
+
+    expect(t.telegram.sends).toHaveLength(0);
+    expect(await companyRow(id)).toMatchObject({ state: "active", baselined: 1 });
+    const settings = await t.store.getSettings();
+    expect(settings.lastPollStats).toBeDefined();
+    expect(settings.lastPollStats).toMatchObject({ companiesOk: 1 });
+  });
 });
 
 describe("helpers", () => {

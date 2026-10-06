@@ -108,4 +108,54 @@ describe("httpDriver", () => {
       { sql: "B", params: [] },
     ]);
   });
+
+  it("passes a timeout signal and retries a timed-out request", async () => {
+    const sleeps: number[] = [];
+    const calls: Call[] = [];
+    let n = 0;
+    const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (n++ === 0) throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      return ok([{ results: [{ ok: 1 }], success: true }])();
+    }) as typeof fetch;
+    const rows = await makeDriver(fetcher, sleeps).query({ sql: "SELECT 1 AS ok" });
+    expect(rows).toEqual([{ ok: 1 }]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.init.signal).toBeInstanceOf(AbortSignal);
+    expect(sleeps).toEqual([500]);
+  });
+
+  it("retries an aborted body read", async () => {
+    const { fetcher, calls } = fakeFetch([
+      () => {
+        const res = new Response("{}", { status: 200 });
+        Object.defineProperty(res, "text", { value: () => Promise.reject(new DOMException("aborted", "AbortError")) });
+        return res;
+      },
+      ok([{ results: [{ ok: 1 }], success: true }]),
+    ]);
+    const rows = await makeDriver(fetcher).query({ sql: "SELECT 1 AS ok" });
+    expect(rows).toEqual([{ ok: 1 }]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("throws a redacted error after persistent timeouts", async () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+    const fetcher = (async () => {
+      attempts++;
+      throw new DOMException(`timed out calling with ${TOKEN}`, "AbortError");
+    }) as typeof fetch;
+    const err = await makeDriver(fetcher, sleeps)
+      .query({ sql: "SELECT 1" })
+      .then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/D1 HTTP query failed: network error/);
+    expect(err!.message).not.toContain(TOKEN);
+    expect(attempts).toBe(4);
+    expect(sleeps).toEqual([500, 1000, 2000]);
+  });
 });

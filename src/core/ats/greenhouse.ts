@@ -1,14 +1,22 @@
 import { failure, fetchJson } from "./http";
-import { countriesInText, decodeEntities, formatMoneyRange, htmlToText, isHttpsUrl, isRecord, str, toEpochMs } from "./text";
+import { isRecord } from "../util";
+import { countriesInText, decodeEntities, formatMoneyRange, htmlToText, isHttpsUrl, str, toEpochMs } from "./text";
 import type { AtsAdapter, JobDetail, NormalizedJob, RemoteSignal } from "./types";
 
 const API = "https://boards-api.greenhouse.io/v1/boards";
 
-/** Greenhouse has no remote field, so the signal comes from location and office text. */
+/**
+ * Greenhouse has no remote field, so the signal comes from location and office text. Text mixing
+ * remote and on-site/hybrid terms (e.g. "Hybrid - NYC / Remote - US") is "unknown", leaving the
+ * per-segment location classifier to decide.
+ */
 export function greenhouseRemote(text: string): RemoteSignal {
   const t = text.toLowerCase();
-  if (/\bhybrid\b|\bon-?site\b|\bin[- ]office\b/.test(t)) return "no";
-  if (/\bremote\b/.test(t)) return "yes";
+  const hasOnsite = /\bhybrid\b|\bon-?site\b|\bin[- ]office\b/.test(t);
+  const hasRemote = /\bremote\b/.test(t);
+  if (hasOnsite && hasRemote) return "unknown";
+  if (hasOnsite) return "no";
+  if (hasRemote) return "yes";
   return "unknown";
 }
 

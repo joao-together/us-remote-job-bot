@@ -38,6 +38,7 @@ CREATE TABLE jobs (
 
 CREATE INDEX jobs_repost_lookup ON jobs (company_id, normalized_title, location_text);
 CREATE INDEX jobs_status ON jobs (status, first_seen_at);
+CREATE INDEX jobs_applied ON jobs (action_at) WHERE user_action = 'applied';
 
 -- Small key/value store: paused, excluded words, poll stats, watchdog state.
 CREATE TABLE settings (

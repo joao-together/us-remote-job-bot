@@ -1,5 +1,6 @@
 import { failure, fetchJson } from "./http";
-import { countryCode, htmlToText, isHttpsUrl, isRecord, str, toEpochMs, unique } from "./text";
+import { isRecord } from "../util";
+import { countryCode, htmlToText, isHttpsUrl, str, toEpochMs, unique } from "./text";
 import type { AtsAdapter, NormalizedJob, RemoteSignal } from "./types";
 
 const API = "https://api.ashbyhq.com/posting-api/job-board";

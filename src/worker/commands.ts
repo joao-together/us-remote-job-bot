@@ -4,7 +4,7 @@ import { MAX_EXCLUDED_WORD_LENGTH } from "../core/config";
 import { normalizeExcludedWord } from "../core/match/rules";
 import type { CompanyRow, Store } from "../core/store/db";
 import type { TelegramClient } from "../core/telegram/client";
-import { isRecord } from "../core/ats/text";
+import { isRecord } from "../core/util";
 import { escapeHtml, jobKeyboard, parseCallbackData, truncate } from "../core/telegram/format";
 import { buildStatus } from "./watchdog";
 

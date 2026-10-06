@@ -1,5 +1,6 @@
 import { failure, fetchJson } from "./http";
-import { countryCode, htmlToText, isRecord, str, toEpochMs, unique } from "./text";
+import { isRecord } from "../util";
+import { countryCode, htmlToText, str, toEpochMs, unique } from "./text";
 import type { AtsAdapter, NormalizedJob, RemoteSignal } from "./types";
 
 const API = "https://apply.workable.com/api";
