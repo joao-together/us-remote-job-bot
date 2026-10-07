@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TelegramError } from "../src/core/telegram/client";
 import { deliver } from "../src/poller/deliver";
 import { runPoll } from "../src/poller/run";
@@ -161,7 +161,7 @@ describe("deliver", () => {
 
   it("does nothing when called with no pending jobs", async () => {
     const stats = await deliver({ ...t.deps, excludedWords: [] });
-    expect(stats).toEqual({ sent: 0, excluded: 0, detailFailures: 0, gone: 0, sendFailures: 0 });
+    expect(stats).toEqual({ sent: 0, messagesSent: 0, excluded: 0, detailFailures: 0, gone: 0, sendFailures: 0 });
     expect(t.telegram.getMeCalls).toBe(0);
   });
 
@@ -287,5 +287,132 @@ describe("location warnings", () => {
 
     expect(t.telegram.sends).toHaveLength(1);
     expect(t.telegram.sends[0]!.html).toContain("⚠️ Check location eligibility");
+  });
+});
+
+describe("multiple recipients", () => {
+  const OWNER = "1001";
+  const ALICE = "3003";
+  const BOB = "4004";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function deliveries() {
+    const res = await env.DB.prepare(
+      "SELECT j.board_job_id, d.user_id, d.telegram_message_id FROM deliveries d JOIN jobs j ON j.id = d.job_id ORDER BY j.id, d.sent_at, d.user_id",
+    ).all();
+    return res.results;
+  }
+
+  /** Baselines Acme, then lists the given new jobs on its board. */
+  async function acmeWith(...ids: string[]) {
+    boards.lever.acme = [];
+    await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    boards.lever.acme = ids.map((id) => leverPosting(id, `Senior Software Engineer ${id}`));
+  }
+
+  it("sends the same alert to the owner and every active member, with spacing and a delivery row each", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    await t.store.inviteUser(BOB, 2);
+    await acmeWith("m1", "m2");
+
+    const stats = await poll();
+
+    expect(stats).toMatchObject({ sent: 2, messagesSent: 6, sendFailures: 0 });
+    expect(t.telegram.sends.map((s) => [s.chatId, s.html.split("\n")[0]])).toEqual([
+      [OWNER, "<b>Senior Software Engineer m1</b>"],
+      [ALICE, "<b>Senior Software Engineer m1</b>"],
+      [BOB, "<b>Senior Software Engineer m1</b>"],
+      [OWNER, "<b>Senior Software Engineer m2</b>"],
+      [ALICE, "<b>Senior Software Engineer m2</b>"],
+      [BOB, "<b>Senior Software Engineer m2</b>"],
+    ]);
+    expect(new Set(t.telegram.sends.map((s) => s.html)).size).toBe(2);
+    expect(t.sleeps).toEqual([1100, 1100, 1100, 1100, 1100]);
+    expect(await deliveries()).toEqual([
+      { board_job_id: "m1", user_id: OWNER, telegram_message_id: 500 },
+      { board_job_id: "m1", user_id: ALICE, telegram_message_id: 501 },
+      { board_job_id: "m1", user_id: BOB, telegram_message_id: 502 },
+      { board_job_id: "m2", user_id: OWNER, telegram_message_id: 503 },
+      { board_job_id: "m2", user_id: ALICE, telegram_message_id: 504 },
+      { board_job_id: "m2", user_id: BOB, telegram_message_id: 505 },
+    ]);
+    expect((await jobRows()).map((r) => [r.board_job_id, r.status, r.telegram_message_id])).toEqual([
+      ["m1", "sent", 500],
+      ["m2", "sent", 503],
+    ]);
+  });
+
+  it("skips a member whose send fails (403) without stopping the owner or others", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    await t.store.inviteUser(BOB, 2);
+    t.telegram.failFor.set(ALICE, new TelegramError("Telegram sendMessage failed (403): Forbidden: bot was blocked by the user", 403, "Forbidden: bot was blocked by the user"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await acmeWith("b1", "b2");
+
+    const stats = await poll();
+
+    expect(stats).toMatchObject({ sent: 2, messagesSent: 4, sendFailures: 2 });
+    expect(t.telegram.sends.map((s) => s.chatId)).toEqual([OWNER, BOB, OWNER, BOB]);
+    expect(await jobStatus("b1")).toBe("sent");
+    expect(await jobStatus("b2")).toBe("sent");
+    expect((await deliveries()).map((d) => d.user_id)).toEqual([OWNER, BOB, OWNER, BOB]);
+    const logged = error.mock.calls.flat().join("\n");
+    expect(logged).toContain("recipient #2 failed for job");
+    expect(logged).toContain("403");
+    expect(logged).not.toContain(ALICE);
+  });
+
+  it("stops the run without reaching members when the owner's send fails ambiguously", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await acmeWith("o1", "o2");
+    t.telegram.failNext = true;
+
+    const stats = await poll();
+
+    expect(stats).toMatchObject({ sent: 0, messagesSent: 0, sendFailures: 1 });
+    expect(t.telegram.sends).toEqual([]);
+    expect(await jobStatus("o1")).toBe("sending");
+    expect(await jobStatus("o2")).toBe("pending");
+    expect(await deliveries()).toEqual([]);
+  });
+
+  it("reverts and stops when Telegram rejects the owner's send (4xx)", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await acmeWith("r1");
+    t.telegram.failNext = true;
+    t.telegram.failWith = new TelegramError("Too Many Requests", 429, "Too Many Requests: retry after 5", 5);
+
+    expect(await poll()).toMatchObject({ sent: 0, sendFailures: 1 });
+    expect(await jobStatus("r1")).toBe("pending");
+    expect(t.telegram.sends).toEqual([]);
+
+    expect(await poll()).toMatchObject({ sent: 1, messagesSent: 2 });
+    expect(t.telegram.sends.map((s) => s.chatId)).toEqual([OWNER, ALICE]);
+  });
+
+  it("stops sending to a revoked member", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    await acmeWith("v1");
+    await poll();
+    expect(t.telegram.sends.map((s) => s.chatId)).toEqual([OWNER, ALICE]);
+
+    await t.store.revokeUser(ALICE);
+    boards.lever.acme!.push(leverPosting("v2", "Senior Backend Engineer"));
+    t.telegram.sends.length = 0;
+    expect(await poll()).toMatchObject({ sent: 1, messagesSent: 1 });
+    expect(t.telegram.sends.map((s) => s.chatId)).toEqual([OWNER]);
+  });
+
+  it("never stores the owner as a member recipient twice", async () => {
+    await t.store.inviteUser(OWNER, 1);
+    await acmeWith("d1");
+    await poll();
+    expect(t.telegram.sends.map((s) => s.chatId)).toEqual([OWNER]);
   });
 });

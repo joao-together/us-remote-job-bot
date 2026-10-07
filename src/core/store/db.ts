@@ -58,7 +58,28 @@ export interface PendingJob extends JobRow {
   boardToken: string;
 }
 
+/** A job a user marked applied; `actionAt` is when that user marked it. */
 export type AppliedJob = PendingJob;
+
+/** An invited user (the owner is never stored). */
+export interface UserRow {
+  userId: string;
+  name: string | null;
+  active: boolean;
+  addedAt: number;
+}
+
+export type InviteStatus = "added" | "reactivated" | "exists";
+
+/** One recipient's copy of a sent job and their own Applied/Skip state. */
+export interface DeliveryRow {
+  jobId: number;
+  userId: string;
+  telegramMessageId: number | null;
+  sentAt: number;
+  userAction: UserAction | null;
+  actionAt: number | null;
+}
 
 /** Summary of one poller run, stored in the `last_poll_stats` setting. */
 export interface PollStats {
@@ -68,7 +89,10 @@ export interface PollStats {
   newJobs: number;
   /** New ids that matched and became pending or suppressed. */
   matched: number;
+  /** Jobs delivered to at least one recipient. */
   sent: number;
+  /** Alert messages sent, across all recipients. */
+  messagesSent?: number;
   sendFailures: number;
 }
 
@@ -182,6 +206,21 @@ function toJob(r: Raw): JobRow {
     actionAt: numOrNull(r.action_at),
     firstSeenAt: num(r.first_seen_at),
     sentAt: numOrNull(r.sent_at),
+  };
+}
+
+function toUser(r: Raw): UserRow {
+  return { userId: String(r.user_id), name: strOrNull(r.name), active: num(r.active) === 1, addedAt: num(r.added_at) };
+}
+
+function toDelivery(r: Raw): DeliveryRow {
+  return {
+    jobId: num(r.job_id),
+    userId: String(r.user_id),
+    telegramMessageId: numOrNull(r.telegram_message_id),
+    sentAt: num(r.sent_at),
+    userAction: (r.user_action as UserAction | null) ?? null,
+    actionAt: numOrNull(r.action_at),
   };
 }
 
@@ -541,7 +580,8 @@ export class Store {
     });
   }
 
-  async markSent(jobId: number, messageId: number, at: number = this.now()): Promise<void> {
+  /** `messageId` is the owner's copy (null when only other recipients received it). */
+  async markSent(jobId: number, messageId: number | null, at: number = this.now()): Promise<void> {
     await this.driver.query({
       sql: "UPDATE jobs SET status = 'sent', telegram_message_id = ?, sent_at = ? WHERE id = ? AND status IN ('sending', 'pending')",
       params: [messageId, at, jobId],
@@ -569,24 +609,138 @@ export class Store {
     return rows[0] ? toPendingJob(rows[0]) : null;
   }
 
-  /** Records applied/skipped on a sent job. Repeating the same action keeps its time. Null if not a sent job. */
-  async setUserAction(jobId: number, action: UserAction, at: number = this.now()): Promise<JobRow | null> {
-    const rows = await this.driver.query<Raw>({
-      sql: `UPDATE jobs SET action_at = CASE WHEN user_action = ? AND action_at IS NOT NULL THEN action_at ELSE ? END,
-          user_action = ?
-        WHERE id = ? AND status = 'sent' RETURNING *`,
-      params: [action, at, action, jobId],
+  /** Records that `userId` was sent job `jobId` as message `messageId`. */
+  async recordDelivery(jobId: number, userId: string, messageId: number, at: number = this.now()): Promise<void> {
+    await this.driver.query({
+      sql: `INSERT INTO deliveries (job_id, user_id, telegram_message_id, sent_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(job_id, user_id) DO UPDATE SET telegram_message_id = excluded.telegram_message_id, sent_at = excluded.sent_at`,
+      params: [jobId, userId, messageId, at],
     });
-    return rows[0] ? toJob(rows[0]) : null;
   }
 
-  /** Applied jobs, newest action first. */
-  async listApplied(limit = 20): Promise<AppliedJob[]> {
+  async getDelivery(jobId: number, userId: string): Promise<DeliveryRow | null> {
     const rows = await this.driver.query<Raw>({
-      sql: `${JOB_WITH_COMPANY} WHERE j.user_action = 'applied' ORDER BY j.action_at DESC, j.id DESC LIMIT ?`,
-      params: [limit],
+      sql: "SELECT * FROM deliveries WHERE job_id = ? AND user_id = ?",
+      params: [jobId, userId],
     });
-    return rows.map(toPendingJob);
+    return rows[0] ? toDelivery(rows[0]) : null;
+  }
+
+  /**
+   * Records one user's applied/skipped on a sent job; repeating the same action keeps its time.
+   * Upserts, so a tap on an alert sent before per-user deliveries existed (no deliveries row)
+   * still works; `messageId` is the tapped message's id. Null if the job isn't sent.
+   */
+  async setDeliveryAction(
+    jobId: number,
+    userId: string,
+    action: UserAction,
+    at: number = this.now(),
+    messageId: number | null = null,
+  ): Promise<DeliveryRow | null> {
+    const rows = await this.driver.query<Raw>({
+      sql: `INSERT INTO deliveries (job_id, user_id, telegram_message_id, sent_at, user_action, action_at)
+        SELECT j.id, ?, ?, COALESCE(j.sent_at, ?), ?, ? FROM jobs j WHERE j.id = ? AND j.status = 'sent'
+        ON CONFLICT(job_id, user_id) DO UPDATE SET
+          action_at = CASE WHEN deliveries.user_action = excluded.user_action AND deliveries.action_at IS NOT NULL
+            THEN deliveries.action_at ELSE excluded.action_at END,
+          user_action = excluded.user_action,
+          telegram_message_id = COALESCE(deliveries.telegram_message_id, excluded.telegram_message_id)
+        RETURNING *`,
+      params: [userId, messageId, at, action, at, jobId],
+    });
+    return rows[0] ? toDelivery(rows[0]) : null;
+  }
+
+  /**
+   * Jobs `userId` marked applied, newest action first. With `includeLegacy` (the owner), jobs
+   * marked applied before per-user deliveries existed (jobs.user_action) are included too,
+   * unless the user has a deliveries row for that job (which then wins).
+   */
+  async listApplied(userId: string, limit = 20, opts: { includeLegacy?: boolean } = {}): Promise<AppliedJob[]> {
+    const cols = "j.*, c.name AS company_name, c.ats AS ats, c.board_token AS board_token";
+    const rows = await this.driver.query<Raw>({
+      sql: `SELECT ${cols}, d.action_at AS applied_at
+          FROM deliveries d JOIN jobs j ON j.id = d.job_id JOIN companies c ON c.id = j.company_id
+          WHERE d.user_id = ? AND d.user_action = 'applied'
+        UNION ALL
+        SELECT ${cols}, j.action_at AS applied_at
+          FROM jobs j JOIN companies c ON c.id = j.company_id
+          WHERE ? = 1 AND j.user_action = 'applied'
+            AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.job_id = j.id AND d.user_id = ?)
+        ORDER BY applied_at DESC, id DESC LIMIT ?`,
+      params: [userId, opts.includeLegacy ? 1 : 0, userId, limit],
+    });
+    return rows.map((r) => ({ ...toPendingJob(r), actionAt: numOrNull(r.applied_at) }));
+  }
+
+  // ---- users (whitelist) ----
+
+  /** Everyone who gets alerts: the owner first, then active invited users in invite order. */
+  async listRecipients(ownerId: string): Promise<string[]> {
+    const rows = await this.driver.query<{ user_id: string }>({
+      sql: "SELECT user_id FROM users WHERE active = 1 AND user_id <> ? ORDER BY added_at, user_id",
+      params: [ownerId],
+    });
+    return [ownerId, ...rows.map((r) => String(r.user_id))];
+  }
+
+  async getUser(userId: string): Promise<UserRow | null> {
+    const rows = await this.driver.query<Raw>({ sql: "SELECT * FROM users WHERE user_id = ?", params: [userId] });
+    return rows[0] ? toUser(rows[0]) : null;
+  }
+
+  async isActiveUser(userId: string): Promise<boolean> {
+    const rows = await this.driver.query({ sql: "SELECT 1 AS x FROM users WHERE user_id = ? AND active = 1", params: [userId] });
+    return rows.length > 0;
+  }
+
+  /** Active invited users, oldest first. */
+  async listUsers(): Promise<UserRow[]> {
+    const rows = await this.driver.query<Raw>({ sql: "SELECT * FROM users WHERE active = 1 ORDER BY added_at, user_id" });
+    return rows.map(toUser);
+  }
+
+  async countActiveUsers(): Promise<number> {
+    const rows = await this.driver.query<Raw>({ sql: "SELECT COUNT(*) AS n FROM users WHERE active = 1" });
+    return num(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Adds or reactivates an invited user. The name comes from their access request when there is
+   * one (otherwise an earlier stored name is kept).
+   */
+  async inviteUser(userId: string, at: number = this.now()): Promise<{ status: InviteStatus; user: UserRow }> {
+    const existing = await this.getUser(userId);
+    if (existing?.active) return { status: "exists", user: existing };
+    const rows = await this.driver.query<Raw>({
+      sql: `INSERT INTO users (user_id, name, active, added_at)
+        VALUES (?, (SELECT name FROM access_requests WHERE user_id = ?), 1, ?)
+        ON CONFLICT(user_id) DO UPDATE SET active = 1, added_at = excluded.added_at,
+          name = COALESCE(excluded.name, users.name)
+        RETURNING *`,
+      params: [userId, userId, at],
+    });
+    return { status: existing ? "reactivated" : "added", user: toUser(rows[0]!) };
+  }
+
+  /** Deactivates an invited user. Returns the user if they were active, else null. */
+  async revokeUser(userId: string): Promise<UserRow | null> {
+    const rows = await this.driver.query<Raw>({
+      sql: "UPDATE users SET active = 0 WHERE user_id = ? AND active = 1 RETURNING *",
+      params: [userId],
+    });
+    return rows[0] ? toUser(rows[0]) : null;
+  }
+
+  /** Records a first contact from an unknown user. True only the first time for that user. */
+  async recordAccessRequest(userId: string, name: string | null, at: number = this.now()): Promise<boolean> {
+    const rows = await this.driver.query({
+      sql: `INSERT INTO access_requests (user_id, name, requested_at) VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO NOTHING RETURNING user_id`,
+      params: [userId, name, at],
+    });
+    return rows.length > 0;
   }
 
   async statusCounts(sinceMidnightUtc: number): Promise<StatusCounts> {

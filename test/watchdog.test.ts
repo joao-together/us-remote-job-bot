@@ -15,6 +15,9 @@ let store: Store;
 
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM deliveries"),
+    env.DB.prepare("DELETE FROM users"),
+    env.DB.prepare("DELETE FROM access_requests"),
     env.DB.prepare("DELETE FROM jobs"),
     env.DB.prepare("DELETE FROM companies"),
     env.DB.prepare("DELETE FROM settings"),

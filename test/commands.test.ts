@@ -1,14 +1,17 @@
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AtsKind } from "../src/core/ats/types";
 import { FAILING_AFTER_CONSECUTIVE } from "../src/core/config";
 import { type NewJob, Store } from "../src/core/store/db";
 import { bindingDriver } from "../src/core/store/driver-binding";
+import { TelegramError } from "../src/core/telegram/client";
 import type { InlineKeyboardMarkup } from "../src/core/telegram/format";
 import { jobKeyboard } from "../src/core/telegram/format";
-import { chunkLines, handleUpdate } from "../src/worker/commands";
+import { chunkLines, handleUpdate, parseUserId, WELCOME_TEXT } from "../src/worker/commands";
 
 const OWNER = 1001;
+const MEMBER = 3003;
+const STRANGER = 2002;
 const T0 = Date.UTC(2026, 9, 6, 12, 0, 0);
 
 let store: Store;
@@ -19,11 +22,16 @@ function fakeTelegram() {
   const sent: { chatId: number | string; html: string }[] = [];
   const answers: { id: string; text?: string }[] = [];
   const edits: { chatId: number | string; messageId: number; markup: InlineKeyboardMarkup }[] = [];
+  /** Sends to these chat ids (as strings) throw the given error. */
+  const failFor = new Map<string, Error>();
   return {
     sent,
     answers,
     edits,
+    failFor,
     async sendMessage(chatId: number | string, html: string) {
+      const err = failFor.get(String(chatId));
+      if (err) throw err;
       sent.push({ chatId, html });
       return { messageId: sent.length };
     },
@@ -38,11 +46,23 @@ function fakeTelegram() {
 
 const deps = () => ({ store, telegram: tg, ownerId: String(OWNER), now: () => clock });
 
-function message(text: string, opts: { from?: number; chatType?: string } = {}) {
+interface MessageOpts {
+  from?: number;
+  chatType?: string;
+  firstName?: string;
+  username?: string;
+}
+
+function message(text: string, opts: MessageOpts = {}) {
   const from = opts.from ?? OWNER;
   return {
     update_id: 1,
-    message: { message_id: 10, from: { id: from, is_bot: false }, chat: { id: from, type: opts.chatType ?? "private" }, text },
+    message: {
+      message_id: 10,
+      from: { id: from, is_bot: false, first_name: opts.firstName ?? "Pat", ...(opts.username && { username: opts.username }) },
+      chat: { id: from, type: opts.chatType ?? "private" },
+      text,
+    },
   };
 }
 
@@ -59,7 +79,7 @@ function callback(data: string, opts: { from?: number; chatType?: string; messag
   };
 }
 
-async function send(text: string, opts?: { from?: number; chatType?: string }) {
+async function send(text: string, opts?: MessageOpts) {
   await handleUpdate(message(text, opts), deps());
   return tg.sent.at(-1)?.html ?? "";
 }
@@ -93,11 +113,16 @@ async function sentJob(companyId: number, boardJobId: string, overrides: Partial
   return id;
 }
 
+const ownerAction = async (jobId: number) => (await store.getDelivery(jobId, String(OWNER)))?.userAction ?? null;
+
 const statuses = async () =>
   (await env.DB.prepare("SELECT status FROM jobs ORDER BY id").all<{ status: string }>()).results.map((r) => r.status);
 
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM deliveries"),
+    env.DB.prepare("DELETE FROM users"),
+    env.DB.prepare("DELETE FROM access_requests"),
     env.DB.prepare("DELETE FROM jobs"),
     env.DB.prepare("DELETE FROM companies"),
     env.DB.prepare("DELETE FROM settings"),
@@ -108,10 +133,12 @@ beforeEach(async () => {
 });
 
 describe("authorization", () => {
-  it("ignores messages from other users", async () => {
-    await send("/pause", { from: 2002 });
-    expect(tg.sent).toEqual([]);
+  it("does not run commands for unknown users", async () => {
+    await send("/pause", { from: STRANGER });
+    await send("/invite 2002", { from: STRANGER });
     expect((await store.getSettings()).paused).toBe(false);
+    expect(await store.listUsers()).toEqual([]);
+    expect(tg.sent.every((m) => !m.html.includes("Paused"))).toBe(true);
   });
 
   it("ignores the owner in a group chat", async () => {
@@ -120,13 +147,25 @@ describe("authorization", () => {
     expect(await store.listCompanies()).toEqual([]);
   });
 
-  it("ignores callbacks from other users or group chats", async () => {
+  it("ignores callbacks from unknown or revoked users and from group chats", async () => {
     const c = await addCompany("Acme", "acme");
     const id = await sentJob(c.id, "1");
-    await handleUpdate(callback(`a:${id}`, { from: 2002 }), deps());
+    await store.inviteUser(String(MEMBER));
+    await store.revokeUser(String(MEMBER));
+    await handleUpdate(callback(`a:${id}`, { from: STRANGER }), deps());
+    await handleUpdate(callback(`a:${id}`, { from: MEMBER }), deps());
     await handleUpdate(callback(`a:${id}`, { chatType: "supergroup" }), deps());
     expect(tg.answers).toEqual([]);
-    expect((await store.getJob(id))?.userAction).toBeNull();
+    expect(tg.sent).toEqual([]);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM deliveries").first("n")).toBe(0);
+  });
+
+  it("ignores a member in a group chat", async () => {
+    await store.inviteUser(String(MEMBER));
+    await send("/help", { from: MEMBER, chatType: "group" });
+    await send("/help", { from: STRANGER, chatType: "group" });
+    expect(tg.sent).toEqual([]);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM access_requests").first("n")).toBe(0);
   });
 
   it("ignores malformed updates", async () => {
@@ -309,8 +348,8 @@ describe("/applied", () => {
     const c = await addCompany("Acme & Co", "acme");
     const a = await sentJob(c.id, "1", { title: "Dev <1>" });
     const b = await sentJob(c.id, "2", { title: "Dev 2" });
-    await store.setUserAction(a, "applied", T0);
-    await store.setUserAction(b, "applied", T0 + 86_400_000);
+    await store.setDeliveryAction(a, String(OWNER), "applied", T0);
+    await store.setDeliveryAction(b, String(OWNER), "applied", T0 + 86_400_000);
     const reply = await send("/applied");
     expect(reply).toContain("1. Dev 2 — Acme &amp; Co (2026-10-07)\nhttps://jobs.lever.co/acme/2");
     expect(reply).toContain("2. Dev &lt;1&gt; — Acme &amp; Co (2026-10-06)");
@@ -325,18 +364,19 @@ describe("buttons", () => {
     await handleUpdate(callback(`a:${id}`), deps());
     expect(tg.answers.at(-1)?.text).toBe("Marked applied");
     expect(tg.edits.at(-1)).toEqual({ chatId: OWNER, messageId: 77, markup: jobKeyboard(id, "applied") });
-    expect(await store.getJob(id)).toMatchObject({ userAction: "applied", actionAt: T0 });
+    expect(await store.getDelivery(id, String(OWNER))).toMatchObject({ userAction: "applied", actionAt: T0 });
 
     clock = T0 + 1000;
     await handleUpdate(callback(`a:${id}`), deps());
-    expect(await store.getJob(id)).toMatchObject({ userAction: "applied", actionAt: T0 });
+    expect(await store.getDelivery(id, String(OWNER))).toMatchObject({ userAction: "applied", actionAt: T0 });
     expect(tg.edits.at(-1)?.markup).toEqual(jobKeyboard(id, "applied"));
 
     clock = T0 + 2000;
     await handleUpdate(callback(`s:${id}`), deps());
     expect(tg.answers.at(-1)?.text).toBe("Marked skipped");
     expect(tg.edits.at(-1)?.markup).toEqual(jobKeyboard(id, "skipped"));
-    expect(await store.getJob(id)).toMatchObject({ userAction: "skipped", actionAt: T0 + 2000 });
+    expect(await store.getDelivery(id, String(OWNER))).toMatchObject({ userAction: "skipped", actionAt: T0 + 2000 });
+    expect(await ownerAction(id)).toBe("skipped");
   });
 
   it("answers unknown buttons", async () => {
@@ -352,5 +392,231 @@ describe("buttons", () => {
     await handleUpdate(callback("a:999999"), deps());
     expect(tg.answers.map((a) => a.text)).toEqual(["This job can't be updated", "This job can't be updated"]);
     expect(tg.edits).toEqual([]);
+  });
+});
+
+describe("members", () => {
+  beforeEach(async () => {
+    await store.inviteUser(String(MEMBER));
+  });
+
+  it("shows members their own help and the owner the full one", async () => {
+    const memberHelp = await send("/start", { from: MEMBER });
+    expect(tg.sent.at(-1)?.chatId).toBe(MEMBER);
+    expect(memberHelp).toContain("/applied");
+    expect(memberHelp).toContain("/status");
+    expect(memberHelp).not.toContain("/add");
+    expect(memberHelp).not.toContain("/invite");
+    expect(await send("/help", { from: MEMBER })).toBe(memberHelp);
+
+    const ownerHelp = await send("/help");
+    for (const cmd of ["/add", "/invite", "/revoke", "/users", "/pause"]) expect(ownerHelp).toContain(cmd);
+  });
+
+  it("rejects every owner-only command from a member without side effects", async () => {
+    const cmds = [
+      "/add https://jobs.lever.co/acme",
+      "/remove acme",
+      "/companies",
+      "/exclude add clearance",
+      "/exclude list",
+      "/pause",
+      "/resume",
+      "/invite 4004",
+      "/revoke 3003",
+      "/users",
+      "/PAUSE@JobAlertBot",
+    ];
+    for (const cmd of cmds) expect(await send(cmd, { from: MEMBER })).toBe("Only the owner can do that.");
+    expect(tg.sent.every((m) => m.chatId === MEMBER)).toBe(true);
+    expect(await store.getSettings()).toMatchObject({ paused: false, excludedWords: [] });
+    expect(await store.listCompanies({ includeInactive: true })).toEqual([]);
+    expect((await store.listUsers()).map((u) => u.userId)).toEqual([String(MEMBER)]);
+  });
+
+  it("gives members /status without the user count, and the owner with it", async () => {
+    const memberStatus = await send("/status", { from: MEMBER });
+    expect(memberStatus).toContain("<b>Status</b>");
+    expect(memberStatus).not.toContain("Invited users");
+    expect(await send("/status")).toContain("Invited users: 1");
+  });
+
+  it("hints at /help for a member's plain text and unknown commands", async () => {
+    expect(await send("hi", { from: MEMBER })).toContain("/help");
+    expect(await send("/frobnicate", { from: MEMBER })).toContain("Unknown command");
+  });
+
+  it("keeps Applied/Skip and /applied separate per user", async () => {
+    const c = await addCompany("Acme", "acme");
+    const a = await sentJob(c.id, "1", { title: "Dev A" });
+    const b = await sentJob(c.id, "2", { title: "Dev B" });
+    await store.recordDelivery(a, String(MEMBER), 900, T0);
+
+    await handleUpdate(callback(`a:${a}`), deps());
+    expect(await send("/applied", { from: MEMBER })).toContain("haven't marked any jobs");
+    expect(await send("/applied")).toContain("Dev A");
+
+    await handleUpdate(callback(`s:${a}`, { from: MEMBER, messageId: 900 }), deps());
+    await handleUpdate(callback(`a:${b}`, { from: MEMBER, messageId: 901 }), deps());
+    expect(tg.edits.at(-2)).toEqual({ chatId: MEMBER, messageId: 900, markup: jobKeyboard(a, "skipped") });
+    expect(tg.edits.at(-1)).toEqual({ chatId: MEMBER, messageId: 901, markup: jobKeyboard(b, "applied") });
+
+    const memberApplied = await send("/applied", { from: MEMBER });
+    expect(memberApplied).toContain("Dev B");
+    expect(memberApplied).not.toContain("Dev A");
+    const ownerApplied = await send("/applied");
+    expect(ownerApplied).toContain("Dev A");
+    expect(ownerApplied).not.toContain("Dev B");
+    expect(await ownerAction(a)).toBe("applied");
+  });
+
+  it("records a tap on a legacy owner alert (sent before deliveries existed) with its message id", async () => {
+    const c = await addCompany("Acme", "acme");
+    const id = await sentJob(c.id, "1", { title: "Legacy role" });
+    expect(await store.getDelivery(id, String(OWNER))).toBeNull();
+
+    await handleUpdate(callback(`a:${id}`, { messageId: 4242 }), deps());
+    expect(tg.answers.at(-1)?.text).toBe("Marked applied");
+    expect(tg.edits.at(-1)).toEqual({ chatId: OWNER, messageId: 4242, markup: jobKeyboard(id, "applied") });
+    expect(await store.getDelivery(id, String(OWNER))).toMatchObject({
+      telegramMessageId: 4242,
+      sentAt: T0,
+      userAction: "applied",
+      actionAt: T0,
+    });
+    expect(await send("/applied")).toContain("Legacy role");
+    expect(await send("/applied", { from: MEMBER })).toContain("haven't marked any jobs");
+  });
+
+  it("still lists the owner's jobs marked applied before per-user tracking, but not for members", async () => {
+    const c = await addCompany("Acme", "acme");
+    const id = await sentJob(c.id, "1", { title: "Old applied role" });
+    await env.DB.prepare("UPDATE jobs SET user_action = 'applied', action_at = ? WHERE id = ?").bind(T0, id).run();
+    expect(await send("/applied")).toContain("Old applied role");
+    expect(await send("/applied", { from: MEMBER })).toContain("haven't marked any jobs");
+  });
+});
+
+describe("unknown users", () => {
+  it("replies once with their id and notifies the owner once, then stays silent", async () => {
+    await send("hello", { from: STRANGER, firstName: "Eve <x>", username: "eve_k" });
+    expect(tg.sent).toHaveLength(2);
+    expect(tg.sent[0]!.chatId).toBe(STRANGER);
+    expect(tg.sent[0]!.html).toBe(
+      `This bot is private. Your Telegram user id is <code>${STRANGER}</code> — send it to the bot owner to request access.`,
+    );
+    expect(tg.sent[1]!.chatId).toBe(String(OWNER));
+    expect(tg.sent[1]!.html).toContain(`Access request from Eve &lt;x&gt; (@eve_k) — id <code>${STRANGER}</code>`);
+    expect(tg.sent[1]!.html).toContain(`Tap to allow: <code>/invite ${STRANGER}</code>`);
+
+    await send("/start", { from: STRANGER });
+    await send("please?", { from: STRANGER });
+    expect(tg.sent).toHaveLength(2);
+    const rows = await env.DB.prepare("SELECT user_id, name FROM access_requests").all();
+    expect(rows.results).toEqual([{ user_id: String(STRANGER), name: "Eve <x> (@eve_k)" }]);
+  });
+
+  it("still notifies the owner if the reply to the stranger fails", async () => {
+    tg.failFor.set(String(STRANGER), new TelegramError("Forbidden", 403, "Forbidden: bot was blocked by the user"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await send("hi", { from: STRANGER });
+    expect(tg.sent.map((m) => m.chatId)).toEqual([String(OWNER)]);
+    error.mockRestore();
+  });
+
+  it("uses the requester's name on invite and keeps a revoked user silent", async () => {
+    await send("hi", { from: STRANGER, firstName: "Eve" });
+    await send(`/invite ${STRANGER}`);
+    expect(await store.getUser(String(STRANGER))).toMatchObject({ name: "Eve", active: true });
+    expect(await send("/applied", { from: STRANGER })).toContain("haven't marked any jobs");
+
+    await send(`/revoke ${STRANGER}`);
+    tg.sent.length = 0;
+    await send("/status", { from: STRANGER });
+    expect(tg.sent).toEqual([]);
+  });
+});
+
+describe("/invite", () => {
+  it("validates the user id", async () => {
+    for (const arg of ["", "abc", "12a", "-5", "0", "000", "1".repeat(21), "1 2"]) {
+      expect(await send(`/invite ${arg}`.trim())).toContain("Usage: /invite");
+    }
+    expect(await store.listUsers()).toEqual([]);
+    expect(parseUserId("00123")).toBe("123");
+    expect(parseUserId("9".repeat(20))).toBe("9".repeat(20));
+  });
+
+  it("refuses the owner's own id", async () => {
+    expect(await send(`/invite ${OWNER}`)).toBe("You're already the owner.");
+    expect(await store.listUsers()).toEqual([]);
+  });
+
+  it("adds the user, welcomes them, and reports an existing user", async () => {
+    const reply = await send(`/invite ${MEMBER}`);
+    expect(tg.sent[0]).toEqual({ chatId: String(MEMBER), html: WELCOME_TEXT });
+    expect(tg.sent[1]!.chatId).toBe(OWNER);
+    expect(reply).toContain(`Added id <code>${MEMBER}</code>`);
+    expect(reply).toContain("welcome message was sent");
+    expect(await store.listRecipients(String(OWNER))).toEqual([String(OWNER), String(MEMBER)]);
+
+    tg.sent.length = 0;
+    expect(await send(`/invite ${MEMBER}`)).toContain("already has access");
+    expect(tg.sent).toHaveLength(1);
+  });
+
+  it("tells the owner when the new user hasn't pressed Start (403)", async () => {
+    tg.failFor.set(String(MEMBER), new TelegramError("Forbidden", 403, "Forbidden: bot can't initiate conversation with a user"));
+    const reply = await send(`/invite ${MEMBER}`);
+    expect(reply).toContain("Added, but they need to open the bot and press Start before alerts can reach them.");
+    expect(await store.isActiveUser(String(MEMBER))).toBe(true);
+  });
+
+  it("re-adds a revoked user", async () => {
+    await send(`/invite ${MEMBER}`);
+    await send(`/revoke ${MEMBER}`);
+    expect(await send(`/invite ${MEMBER}`)).toContain("Re-added");
+    expect(await store.isActiveUser(String(MEMBER))).toBe(true);
+  });
+});
+
+describe("/revoke", () => {
+  it("deactivates a member, who then gets no member commands or alerts", async () => {
+    await store.inviteUser(String(MEMBER));
+    expect(await send(`/revoke ${MEMBER}`)).toContain(`Revoked id <code>${MEMBER}</code>`);
+    expect(await store.listRecipients(String(OWNER))).toEqual([String(OWNER)]);
+    expect(await store.isActiveUser(String(MEMBER))).toBe(false);
+
+    tg.sent.length = 0;
+    await send("/status", { from: MEMBER });
+    expect(tg.sent.some((m) => m.html.includes("<b>Status</b>"))).toBe(false);
+  });
+
+  it("validates and reports unknown ids", async () => {
+    expect(await send("/revoke")).toContain("Usage: /revoke");
+    expect(await send("/revoke x1")).toContain("Usage: /revoke");
+    expect(await send(`/revoke ${OWNER}`)).toBe("You can't revoke the owner.");
+    expect(await send("/revoke 999")).toContain("isn't an invited user");
+  });
+});
+
+describe("/users", () => {
+  it("says when nobody is invited", async () => {
+    expect(await send("/users")).toBe("No invited users.");
+  });
+
+  it("lists active users with name, id and date, escaped", async () => {
+    await store.recordAccessRequest("500", "Ann <A> (@ann)", T0);
+    await store.inviteUser("500", T0);
+    await store.inviteUser("600", T0 + 86_400_000);
+    await store.inviteUser("700", T0);
+    await store.revokeUser("700");
+    expect(await send("/users")).toBe(
+      [
+        "<b>Invited users (2)</b>",
+        "• Ann &lt;A&gt; (@ann) (id <code>500</code>) — added 2026-10-06",
+        "• id <code>600</code> — added 2026-10-07",
+      ].join("\n"),
+    );
   });
 });

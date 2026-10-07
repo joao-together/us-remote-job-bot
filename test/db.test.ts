@@ -10,7 +10,11 @@ let clock = T0;
 let store: Store;
 
 beforeEach(async () => {
-  await env.DB.batch([env.DB.prepare("DELETE FROM jobs"), env.DB.prepare("DELETE FROM companies"), env.DB.prepare("DELETE FROM settings")]);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM deliveries"),
+    env.DB.prepare("DELETE FROM users"),
+    env.DB.prepare("DELETE FROM access_requests"),
+    env.DB.prepare("DELETE FROM jobs"), env.DB.prepare("DELETE FROM companies"), env.DB.prepare("DELETE FROM settings")]);
   clock = T0;
   store = new Store(bindingDriver(env.DB), () => clock);
 });
@@ -226,25 +230,94 @@ describe("user actions", () => {
     const [a, b] = await store.listPending();
     await sendJob(a!.id);
 
-    expect(await store.setUserAction(b!.id, "applied", T0)).toBeNull();
-    expect(await store.setUserAction(a!.id, "applied", T0 + 1)).toMatchObject({ userAction: "applied", actionAt: T0 + 1 });
-    expect(await store.setUserAction(a!.id, "applied", T0 + 2)).toMatchObject({ userAction: "applied", actionAt: T0 + 1 });
-    expect(await store.setUserAction(a!.id, "skipped", T0 + 3)).toMatchObject({ userAction: "skipped", actionAt: T0 + 3 });
-    expect(await store.setUserAction(a!.id, "applied", T0 + 4)).toMatchObject({ userAction: "applied", actionAt: T0 + 4 });
+    expect(await store.setDeliveryAction(b!.id, "u1", "applied", T0)).toBeNull();
+    expect(await store.setDeliveryAction(a!.id, "u1", "applied", T0 + 1)).toMatchObject({ userAction: "applied", actionAt: T0 + 1 });
+    expect(await store.setDeliveryAction(a!.id, "u1", "applied", T0 + 2)).toMatchObject({ userAction: "applied", actionAt: T0 + 1 });
+    expect(await store.setDeliveryAction(a!.id, "u1", "skipped", T0 + 3)).toMatchObject({ userAction: "skipped", actionAt: T0 + 3 });
+    expect(await store.setDeliveryAction(a!.id, "u1", "applied", T0 + 4)).toMatchObject({ userAction: "applied", actionAt: T0 + 4 });
+    // The legacy job-level columns are no longer written.
+    expect(await store.getJob(a!.id)).toMatchObject({ userAction: null, actionAt: null });
   });
 
-  it("lists only applied jobs, newest first", async () => {
+  it("keeps each user's action separate and keeps the recorded message id", async () => {
+    const c = await addCompany();
+    await store.runBatch([store.stmtInsertJob(job(c, "1"))]);
+    const [a] = await store.listPending();
+    await sendJob(a!.id, 100, T0);
+    await store.recordDelivery(a!.id, "u2", 200, T0);
+
+    await store.setDeliveryAction(a!.id, "u1", "applied", T0 + 1, 100);
+    await store.setDeliveryAction(a!.id, "u2", "skipped", T0 + 2, 999);
+    expect(await store.getDelivery(a!.id, "u1")).toEqual({
+      jobId: a!.id, userId: "u1", telegramMessageId: 100, sentAt: T0, userAction: "applied", actionAt: T0 + 1,
+    });
+    // u2 already had a delivery row: its message id is kept, the action is set.
+    expect(await store.getDelivery(a!.id, "u2")).toMatchObject({ telegramMessageId: 200, userAction: "skipped" });
+  });
+
+  it("lists only one user's applied jobs, newest first", async () => {
     const c = await addCompany("Acme", "acme");
     await store.runBatch(["1", "2", "3"].map((id) => store.stmtInsertJob(job(c, id))));
     const [j1, j2, j3] = await store.listPending();
     for (const j of [j1!, j2!, j3!]) await sendJob(j.id);
-    await store.setUserAction(j1!.id, "applied", T0 + 100);
-    await store.setUserAction(j2!.id, "skipped", T0 + 200);
-    await store.setUserAction(j3!.id, "applied", T0 + 300);
+    await store.setDeliveryAction(j1!.id, "u1", "applied", T0 + 100);
+    await store.setDeliveryAction(j2!.id, "u1", "skipped", T0 + 200);
+    await store.setDeliveryAction(j3!.id, "u1", "applied", T0 + 300);
+    await store.setDeliveryAction(j2!.id, "u2", "applied", T0 + 400);
 
-    const applied = await store.listApplied();
+    const applied = await store.listApplied("u1");
     expect(applied.map((j) => j.boardJobId)).toEqual(["3", "1"]);
-    expect(applied[0]).toMatchObject({ companyName: "Acme", applyUrl: "https://jobs.lever.co/acme/3" });
+    expect(applied[0]).toMatchObject({ companyName: "Acme", applyUrl: "https://jobs.lever.co/acme/3", actionAt: T0 + 300 });
+    expect((await store.listApplied("u2")).map((j) => j.boardJobId)).toEqual(["2"]);
+    expect(await store.listApplied("u3")).toEqual([]);
+  });
+
+  it("includes legacy job-level applied rows only when asked, unless overridden per user", async () => {
+    const c = await addCompany("Acme", "acme");
+    await store.runBatch(["1", "2", "3"].map((id) => store.stmtInsertJob(job(c, id))));
+    const [j1, j2, j3] = await store.listPending();
+    for (const j of [j1!, j2!, j3!]) await sendJob(j.id);
+    // Applied before per-user deliveries existed.
+    await env.DB.prepare("UPDATE jobs SET user_action = 'applied', action_at = ? WHERE id IN (?, ?)").bind(T0 + 50, j1!.id, j2!.id).run();
+    await store.setDeliveryAction(j2!.id, "owner", "skipped", T0 + 60);
+    await store.setDeliveryAction(j3!.id, "owner", "applied", T0 + 70);
+
+    expect((await store.listApplied("owner", 20, { includeLegacy: true })).map((j) => [j.boardJobId, j.actionAt])).toEqual([
+      ["3", T0 + 70],
+      ["1", T0 + 50],
+    ]);
+    expect((await store.listApplied("owner")).map((j) => j.boardJobId)).toEqual(["3"]);
+    expect(await store.listApplied("member", 20, { includeLegacy: false })).toEqual([]);
+    expect(await store.listApplied("owner", 1, { includeLegacy: true })).toHaveLength(1);
+  });
+});
+
+describe("users", () => {
+  it("lists recipients with the owner first and only active users", async () => {
+    expect(await store.listRecipients("1001")).toEqual(["1001"]);
+    clock = T0 + 1;
+    await store.inviteUser("300");
+    clock = T0 + 2;
+    await store.inviteUser("200");
+    await store.inviteUser("400");
+    await store.revokeUser("400");
+    expect(await store.listRecipients("1001")).toEqual(["1001", "300", "200"]);
+    expect(await store.countActiveUsers()).toBe(2);
+    expect(await store.isActiveUser("300")).toBe(true);
+    expect(await store.isActiveUser("400")).toBe(false);
+  });
+
+  it("invites with the access request's name, reports existing, and reactivates", async () => {
+    expect(await store.recordAccessRequest("500", "Jane (@jane)", T0)).toBe(true);
+    expect(await store.recordAccessRequest("500", "Other", T0 + 1)).toBe(false);
+
+    expect(await store.inviteUser("500", T0 + 2)).toEqual({ status: "added", user: { userId: "500", name: "Jane (@jane)", active: true, addedAt: T0 + 2 } });
+    expect((await store.inviteUser("500", T0 + 3)).status).toBe("exists");
+    expect(await store.revokeUser("500")).toMatchObject({ userId: "500", active: false });
+    expect(await store.revokeUser("500")).toBeNull();
+    expect(await store.inviteUser("500", T0 + 4)).toMatchObject({ status: "reactivated", user: { active: true, name: "Jane (@jane)", addedAt: T0 + 4 } });
+    expect(await store.inviteUser("600", T0 + 5)).toMatchObject({ status: "added", user: { name: null } });
+    expect((await store.listUsers()).map((u) => u.userId)).toEqual(["500", "600"]);
   });
 });
 

@@ -11,6 +11,9 @@ let telegramCalls: { method: string; body: Record<string, unknown> }[];
 
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM deliveries"),
+    env.DB.prepare("DELETE FROM users"),
+    env.DB.prepare("DELETE FROM access_requests"),
     env.DB.prepare("DELETE FROM jobs"),
     env.DB.prepare("DELETE FROM companies"),
     env.DB.prepare("DELETE FROM settings"),
@@ -74,11 +77,24 @@ describe("webhook auth", () => {
     expect(telegramCalls).toEqual([]);
   });
 
-  it("ignores non-owners and group chats with 200", async () => {
-    expect((await worker.fetch(post(textUpdate("/add https://jobs.lever.co/acme", 2002)), env)).status).toBe(200);
+  it("ignores group chats with 200", async () => {
     expect((await worker.fetch(post(textUpdate("/add https://jobs.lever.co/acme", OWNER, "group")), env)).status).toBe(200);
+    expect((await worker.fetch(post(textUpdate("/add https://jobs.lever.co/acme", 2002, "group")), env)).status).toBe(200);
     expect(await companyCount()).toBe(0);
     expect(telegramCalls).toEqual([]);
+  });
+
+  it("answers an unknown user's first message once (plus one owner notice) and never runs their command", async () => {
+    for (let i = 0; i < 2; i++) {
+      expect((await worker.fetch(post(textUpdate("/add https://jobs.lever.co/acme", 2002)), env)).status).toBe(200);
+    }
+    expect(await companyCount()).toBe(0);
+    expect(telegramCalls.map((c) => [c.method, c.body.chat_id])).toEqual([
+      ["sendMessage", 2002],
+      ["sendMessage", String(OWNER)],
+    ]);
+    expect(String(telegramCalls[0]!.body.text)).toContain("This bot is private");
+    expect(String(telegramCalls[1]!.body.text)).toContain("/invite 2002");
   });
 
   it("returns 200 for invalid JSON", async () => {

@@ -26,6 +26,8 @@ export function fakeTelegram() {
     /** While set, getMe throws (Telegram unreachable). */
     failGetMe: false,
     getMeCalls: 0,
+    /** Sends to these chat ids (as strings) always throw the given error. */
+    failFor: new Map<string, Error>(),
     /** Called after each successful send, e.g. to simulate /pause mid-delivery. */
     onSend: undefined as ((sent: Sent) => void | Promise<void>) | undefined,
     async getMe() {
@@ -40,6 +42,8 @@ export function fakeTelegram() {
         tg.failWith = undefined;
         throw err;
       }
+      const failure = tg.failFor.get(String(chatId));
+      if (failure) throw failure;
       const sent = { chatId, html, markup };
       sends.push(sent);
       await tg.onSend?.(sent);
@@ -125,6 +129,9 @@ export function emptyBoards(): Boards {
 
 export async function resetDb(): Promise<void> {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM deliveries"),
+    env.DB.prepare("DELETE FROM users"),
+    env.DB.prepare("DELETE FROM access_requests"),
     env.DB.prepare("DELETE FROM jobs"),
     env.DB.prepare("DELETE FROM companies"),
     env.DB.prepare("DELETE FROM settings"),

@@ -238,12 +238,14 @@ export async function runPoll(deps: PollDeps): Promise<PollStats> {
     newJobs: outcomes.reduce((n, o) => n + o.newJobs, 0),
     matched: outcomes.reduce((n, o) => n + o.matched, 0),
     sent: 0,
+    messagesSent: 0,
     sendFailures: 0,
   };
 
   if (!settings.paused) {
     const delivered = await deliver({ ...deps, excludedWords });
     stats.sent = delivered.sent;
+    stats.messagesSent = delivered.messagesSent;
     stats.sendFailures = delivered.sendFailures;
   }
 

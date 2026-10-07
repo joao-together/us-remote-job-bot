@@ -31,7 +31,7 @@ async function main(): Promise<void> {
 
   console.log(
     `poll done: ${stats.companiesOk} companies ok, ${stats.companiesFailed} failed, ` +
-      `${stats.newJobs} new jobs, ${stats.matched} matched, ${stats.sent} sent, ${stats.sendFailures} send failures`,
+      `${stats.newJobs} new jobs, ${stats.matched} matched, ${stats.sent} sent (${stats.messagesSent ?? 0} messages), ${stats.sendFailures} send failures`,
   );
 }
 
