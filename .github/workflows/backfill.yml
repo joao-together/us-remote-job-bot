@@ -4,6 +4,11 @@ name: Send open matching roles
 # so the next "Poll job boards" run sends them. Shares the poller's concurrency group.
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only report what would be queued
+        type: boolean
+        default: false
 
 concurrency:
   group: poll
@@ -23,7 +28,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run backfill
+      - run: npm run backfill -- ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
