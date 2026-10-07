@@ -3,6 +3,7 @@ import { bindingDriver } from "../core/store/driver-binding";
 import { TelegramClient, TelegramError } from "../core/telegram/client";
 import { redactSecrets } from "../core/util";
 import { handleUpdate } from "./commands";
+import { dispatchPoll, POLL_CRON } from "./dispatch";
 import type { WorkerEnv } from "./env";
 import { runWatchdog } from "./watchdog";
 
@@ -58,7 +59,11 @@ export default {
     return ok();
   },
 
-  async scheduled(_controller: ScheduledController, env: WorkerEnv): Promise<void> {
+  async scheduled(controller: ScheduledController, env: WorkerEnv): Promise<void> {
+    if (controller.cron === POLL_CRON) {
+      await dispatchPoll({ token: env.GITHUB_DISPATCH_TOKEN, repo: env.GITHUB_REPO });
+      return;
+    }
     const store = new Store(bindingDriver(env.DB));
     const telegram = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN });
     await runWatchdog(store, telegram, env.OWNER_USER_ID, Date.now());

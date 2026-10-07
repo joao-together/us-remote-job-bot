@@ -6,7 +6,7 @@ It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sou
 
 | Part | Runs on | Does |
 |---|---|---|
-| Poller | GitHub Actions, every 10 min (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
+| Poller | GitHub Actions, started every 10 min by the Worker (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
 | Bot | Cloudflare Worker | Commands, button taps, watchdog warnings |
 | Storage | Cloudflare D1 | Companies, seen jobs, settings |
 

@@ -4,9 +4,10 @@ compatibility_date = "2026-08-15"
 workers_dev = true
 preview_urls = false
 
-# Hourly watchdog: warns if the GitHub Actions poller stops succeeding.
+# "*/10": starts the GitHub Actions poller (GitHub's own scheduler is unreliable).
+# "43 * * * *": hourly watchdog that warns if polling stops succeeding.
 [triggers]
-crons = ["43 * * * *"]
+crons = ["*/10 * * * *", "43 * * * *"]
 
 [[d1_databases]]
 binding = "DB"
@@ -17,3 +18,7 @@ migrations_dir = "migrations"
 
 # Secrets (set with `wrangler secret put`):
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, OWNER_USER_ID
+
+[vars]
+GITHUB_REPO = "joao-together/us-remote-job-bot"
+# Secret (wrangler secret put): GITHUB_DISPATCH_TOKEN — fine-grained token, this repo only, Actions: write.
