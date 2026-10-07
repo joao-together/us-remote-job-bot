@@ -266,6 +266,17 @@ describe("/companies", () => {
     expect(reply).toMatch(/Waiting for validation \(1\)[\s\S]*newco/);
   });
 
+  it("lists fast-tier companies by name and only counts wide-tier ones", async () => {
+    await addCompany("Fasty", "fasty");
+    const w = await addCompany("Widey", "widey");
+    await env.DB.prepare("UPDATE companies SET tier = 'wide' WHERE id = ?").bind(w.id).run();
+    const reply = await send("/companies");
+    expect(reply).toContain("Watching 2 companies");
+    expect(reply).toContain("1 checked every 10 minutes (listed below), 1 more checked hourly.");
+    expect(reply).toContain("Fasty");
+    expect(reply).not.toContain("Widey");
+  });
+
   it("splits long lists into messages under 4096 characters", async () => {
     for (let i = 0; i < 200; i++) await addCompany(`Company with a fairly long name number ${i}`, `co-${i}`);
     await send("/companies");

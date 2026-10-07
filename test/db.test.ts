@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { REPOST_WINDOW_MS } from "../src/core/config";
+import { REPOST_WINDOW_MS, WIDE_SLOTS } from "../src/core/config";
 import { Store, parseSeenIds, type NewJob, type PollStats } from "../src/core/store/db";
 import { bindingDriver } from "../src/core/store/driver-binding";
 
@@ -435,6 +435,102 @@ describe("companies", () => {
   });
 });
 
+describe("tiers", () => {
+  /** Bulk-inserts companies; returns their ids in insert order. */
+  async function insertMany(n: number, opts: { prefix: string; tier?: "fast" | "wide"; baselined?: boolean; state?: string }) {
+    const tokens = Array.from({ length: n }, (_, i) => `${opts.prefix}-${i}`);
+    for (let i = 0; i < tokens.length; i += 50) {
+      await env.DB.batch(
+        tokens.slice(i, i + 50).map((token) =>
+          env.DB.prepare(
+            "INSERT INTO companies (name, ats, board_token, state, baselined, created_at, tier) VALUES (?, 'lever', ?, ?, ?, ?, ?)",
+          ).bind(token, token, opts.state ?? "active", opts.baselined === false ? 0 : 1, T0, opts.tier ?? "fast"),
+        ),
+      );
+    }
+    const res = await env.DB.prepare("SELECT id FROM companies WHERE board_token LIKE ? ORDER BY id").bind(`${opts.prefix}-%`).all<{ id: number }>();
+    return res.results.map((r) => r.id);
+  }
+
+  it("new companies default to the fast tier with no last match", async () => {
+    const id = await addCompany();
+    expect(await store.getCompany(id)).toMatchObject({ tier: "fast", lastMatchAt: null });
+    await store.runBatch([store.stmtInsertActiveCompany({ name: "W", ats: "lever", boardToken: "w", tier: "wide" })]);
+    expect((await store.findCompaniesByName("w"))[0]).toMatchObject({ tier: "wide", state: "active", baselined: false });
+    await expect(env.DB.prepare("UPDATE companies SET tier = 'slow' WHERE id = ?").bind(id).run()).rejects.toThrow(/CHECK/);
+  });
+
+  it("listCompaniesForRun returns fast, this slot's wide, validating and capped unbaselined companies only", async () => {
+    const fast = await insertMany(5, { prefix: "fast" });
+    const wide = await insertMany(30, { prefix: "wide", tier: "wide" });
+    const pending = await insertMany(2, { prefix: "pend", state: "pending_validation", baselined: false, tier: "wide" });
+    const newFast = await insertMany(3, { prefix: "newf", baselined: false });
+    const newWide = await insertMany(3, { prefix: "neww", baselined: false, tier: "wide" });
+    await insertMany(4, { prefix: "gone", state: "inactive" });
+    await insertMany(4, { prefix: "gonew", state: "inactive", tier: "wide" });
+
+    for (let slot = 0; slot < WIDE_SLOTS; slot++) {
+      const ids = (await store.listCompaniesForRun(slot, 4)).map((c) => c.id);
+      const expected = [
+        ...fast,
+        ...wide.filter((id) => id % WIDE_SLOTS === slot),
+        ...pending,
+        // Lowest 4 not-yet-baselined active ids, any tier.
+        ...[...newFast, ...newWide].sort((a, b) => a - b).slice(0, 4),
+      ].sort((a, b) => a - b);
+      expect(ids).toEqual(expected);
+    }
+    expect((await store.listCompaniesForRun(0, 0)).filter((c) => !c.baselined && c.state === "active")).toEqual([]);
+    expect((await store.listCompaniesForRun(0)).filter((c) => !c.baselined && c.state === "active")).toHaveLength(6);
+  });
+
+  it("reads only the selected rows from D1, not every company", async () => {
+    const fast = await insertMany(20, { prefix: "fast" });
+    const wide = await insertMany(600, { prefix: "wide", tier: "wide" });
+    await insertMany(5, { prefix: "pend", state: "pending_validation", baselined: false });
+    const slot = 2;
+    const selected = fast.length + wide.filter((id) => id % WIDE_SLOTS === slot).length + 5;
+
+    const q = store.companiesForRunQuery(slot);
+    const res = await env.DB.prepare(q.sql).bind(...(q.params ?? [])).all();
+    expect(res.results).toHaveLength(selected);
+    // ~1 row read per selected row (an index entry), far below the 625 companies in the table.
+    expect(res.meta.rows_read).toBeLessThanOrEqual(selected + 10);
+    const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).bind(...(q.params ?? [])).all<{ detail: string }>();
+    const details = plan.results.map((r) => r.detail);
+    expect(details.some((d) => /companies_tier_slot .*<expr>=\?/.test(d))).toBe(true);
+    expect(details.some((d) => /^SCAN companies/.test(d))).toBe(false);
+  });
+
+  it("moves a wide board to fast when it is added again (/add), active or inactive", async () => {
+    const a = await addCompany("A", "a");
+    const b = await addCompany("B", "b");
+    await store.runBatch(store.stmtsSetTier([a, b], "wide"));
+    await store.setCompanyState(b, "inactive");
+
+    const again = await store.insertCompany({ name: "A", ats: "lever", boardToken: "a" });
+    expect(again).toMatchObject({ status: "exists", company: { tier: "fast" } });
+    expect((await store.getCompany(a))!.tier).toBe("fast");
+    const back = await store.insertCompany({ name: "B", ats: "lever", boardToken: "b" });
+    expect(back).toMatchObject({ status: "reactivated", company: { tier: "fast", state: "pending_validation" } });
+  });
+
+  it("records last_match_at and the tier in the success update, and bulk-sets tiers", async () => {
+    const a = await addCompany("A", "a");
+    const b = await addCompany("B", "b");
+    await store.runBatch(store.stmtsSetTier([a, b], "wide"));
+    expect((await store.getCompany(a))!.tier).toBe("wide");
+    await store.runBatch([store.stmtCompanySuccess(a, { lastMatchAt: T0 + 5, tier: "fast" })]);
+    expect(await store.getCompany(a)).toMatchObject({ tier: "fast", lastMatchAt: T0 + 5 });
+    expect(await store.getCompany(b)).toMatchObject({ tier: "wide", lastMatchAt: null });
+    const brief = await store.listCompaniesBrief();
+    expect(brief.map((c) => [c.name, c.tier, c.seenIds])).toEqual([
+      ["A", "fast", []],
+      ["B", "wide", []],
+    ]);
+  });
+});
+
 describe("settings and status", () => {
   it("has defaults and round-trips values", async () => {
     const stats: PollStats = { companiesOk: 3, companiesFailed: 1, newJobs: 4, matched: 2, sent: 2, sendFailures: 0 };
@@ -490,6 +586,8 @@ describe("settings and status", () => {
     expect(await store.statusCounts(Date.UTC(2026, 9, 6))).toEqual({
       sentToday: 1,
       active: 2,
+      fast: 2,
+      wide: 0,
       failing: 1,
       pendingValidation: 1,
       pending: 2,

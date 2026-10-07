@@ -1,5 +1,5 @@
 import type { AtsKind } from "../ats/types";
-import { FAILING_AFTER_CONSECUTIVE, REPOST_WINDOW_MS } from "../config";
+import { BASELINE_COMPANIES_PER_RUN, FAILING_AFTER_CONSECUTIVE, REPOST_WINDOW_MS, WIDE_SLOTS } from "../config";
 import type { LocationClass } from "../match/rules";
 import type { DbDriver, Statement } from "./driver";
 import { chunk } from "../util";
@@ -9,6 +9,8 @@ const MAX_IN_PARAMS = 90;
 const MAX_ERROR_LENGTH = 500;
 
 export type CompanyState = "active" | "pending_validation" | "inactive";
+/** 'fast': checked every run. 'wide': checked once every WIDE_SLOTS runs (see listCompaniesForRun). */
+export type CompanyTier = "fast" | "wide";
 export type JobStatus = "seen" | "duplicate" | "excluded" | "suppressed" | "pending" | "sending" | "sent";
 export type UserAction = "applied" | "skipped";
 
@@ -22,6 +24,9 @@ export interface CompanyRow {
   consecutiveFailures: number;
   lastError: string | null;
   createdAt: number;
+  tier: CompanyTier;
+  /** Epoch ms of the last new job on this board that passed matching (after baseline). */
+  lastMatchAt: number | null;
   failing: boolean;
   /**
    * Board job ids seen on this board that never matched (baseline or failed the filters), kept
@@ -147,6 +152,10 @@ export interface RepostCandidate {
 export interface StatusCounts {
   sentToday: number;
   active: number;
+  /** Active companies per tier (fast + wide = active). */
+  fast: number;
+  wide: number;
+  /** Failing active fast-tier companies (wide boards are left out; see WATCHDOG_FAILING_SHARE). */
   failing: number;
   pendingValidation: number;
   pending: number;
@@ -182,6 +191,8 @@ function toCompany(r: Raw): CompanyRow {
     consecutiveFailures,
     lastError: strOrNull(r.last_error),
     createdAt: num(r.created_at),
+    tier: r.tier === "wide" ? "wide" : "fast",
+    lastMatchAt: numOrNull(r.last_match_at),
     failing: consecutiveFailures >= FAILING_AFTER_CONSECUTIVE,
     seenIds: parseSeenIds(r.seen_ids),
   };
@@ -329,6 +340,55 @@ export class Store {
     return rows.map(toCompany);
   }
 
+  /**
+   * Companies one poller run checks, by id:
+   * - every active, baselined fast-tier company;
+   * - active, baselined wide-tier companies whose `id % WIDE_SLOTS` equals `slot`;
+   * - every pending_validation company (from /add);
+   * - up to `baselineCap` not-yet-baselined active companies of either tier, lowest ids first.
+   * Each part is an index lookup on companies_tier_slot (migration 0004), so D1 reads only these
+   * rows rather than every company. WIDE_SLOTS is inlined so the expression matches the index.
+   */
+  async listCompaniesForRun(slot: number, baselineCap: number = BASELINE_COMPANIES_PER_RUN): Promise<CompanyRow[]> {
+    const rows = await this.driver.query<Raw>(this.companiesForRunQuery(slot, baselineCap));
+    return rows.map(toCompany).sort((a, b) => a.id - b.id);
+  }
+
+  /** The statement behind listCompaniesForRun (exposed for tests that measure rows read). */
+  companiesForRunQuery(slot: number, baselineCap: number = BASELINE_COMPANIES_PER_RUN): Statement {
+    return {
+      sql: `SELECT * FROM companies WHERE state = 'active' AND tier = 'fast' AND baselined = 1
+        UNION ALL
+        SELECT * FROM companies WHERE state = 'active' AND tier = 'wide' AND baselined = 1 AND id % ${WIDE_SLOTS} = ?
+        UNION ALL
+        SELECT * FROM companies WHERE state = 'pending_validation'
+        UNION ALL
+        SELECT * FROM (SELECT * FROM companies WHERE state = 'active' AND tier IN ('fast', 'wide') AND baselined = 0
+          ORDER BY id LIMIT ?)`,
+      params: [Math.trunc(slot), Math.max(0, Math.trunc(baselineCap))],
+    };
+  }
+
+  /**
+   * Every company in any state, without seen_ids (which can be large), for the expansion script:
+   * dedupe against existing boards and pick demotions. `seenIds` reads as [].
+   */
+  async listCompaniesBrief(): Promise<CompanyRow[]> {
+    const rows = await this.driver.query<Raw>({
+      sql: `SELECT id, name, ats, board_token, state, baselined, consecutive_failures, last_error, created_at, tier,
+          last_match_at FROM companies ORDER BY id`,
+    });
+    return rows.map(toCompany);
+  }
+
+  /** Moves these companies to `tier`, in statements of at most MAX_IN_PARAMS ids. */
+  stmtsSetTier(ids: readonly number[], tier: CompanyTier): Statement[] {
+    return chunk([...ids], MAX_IN_PARAMS).map((part) => ({
+      sql: `UPDATE companies SET tier = ? WHERE id IN (${placeholders(part.length)}) AND tier <> ?`,
+      params: [tier, ...part, tier],
+    }));
+  }
+
   async listCompanies(opts: { includeInactive?: boolean } = {}): Promise<CompanyRow[]> {
     const where = opts.includeInactive ? "" : "WHERE state != 'inactive'";
     const rows = await this.driver.query<Raw>({ sql: `SELECT * FROM companies ${where} ORDER BY name COLLATE NOCASE, id` });
@@ -340,7 +400,10 @@ export class Store {
     return rows[0] ? toCompany(rows[0]) : null;
   }
 
-  /** Inserts a company, or reactivates an inactive one with the same board as pending_validation. */
+  /**
+   * Inserts a company (fast tier), or reactivates an inactive one with the same board as
+   * pending_validation. A board added again (/add) is moved to the fast tier if it was wide.
+   */
   async insertCompany(c: NewCompany): Promise<{ status: InsertCompanyStatus; company: CompanyRow }> {
     const existing = await this.driver.query<Raw>({
       sql: "SELECT * FROM companies WHERE ats = ? AND board_token = ?",
@@ -349,9 +412,15 @@ export class Store {
     const found = existing[0];
     if (found) {
       const company = toCompany(found);
-      if (company.state !== "inactive") return { status: "exists", company };
+      if (company.state !== "inactive") {
+        if (company.tier === "wide") {
+          await this.driver.query({ sql: "UPDATE companies SET tier = 'fast' WHERE id = ?", params: [company.id] });
+          company.tier = "fast";
+        }
+        return { status: "exists", company };
+      }
       const rows = await this.driver.query<Raw>({
-        sql: "UPDATE companies SET state = 'pending_validation', consecutive_failures = 0, last_error = NULL WHERE id = ? RETURNING *",
+        sql: "UPDATE companies SET state = 'pending_validation', consecutive_failures = 0, last_error = NULL, tier = 'fast' WHERE id = ? RETURNING *",
         params: [company.id],
       });
       return { status: "reactivated", company: toCompany(rows[0] ?? found) };
@@ -375,11 +444,14 @@ export class Store {
    * silently (capped per run by BASELINE_COMPANIES_PER_RUN). A board already present, in any
    * state, is left untouched.
    */
-  stmtInsertActiveCompany(c: Pick<NewCompany, "name" | "ats" | "boardToken">, at: number = this.now()): Statement {
+  stmtInsertActiveCompany(
+    c: Pick<NewCompany, "name" | "ats" | "boardToken"> & { tier?: CompanyTier },
+    at: number = this.now(),
+  ): Statement {
     return {
-      sql: `INSERT INTO companies (name, ats, board_token, state, baselined, consecutive_failures, created_at)
-        VALUES (?, ?, ?, 'active', 0, 0, ?) ON CONFLICT(ats, board_token) DO NOTHING`,
-      params: [c.name, c.ats, c.boardToken, Math.trunc(at)],
+      sql: `INSERT INTO companies (name, ats, board_token, state, baselined, consecutive_failures, created_at, tier)
+        VALUES (?, ?, ?, 'active', 0, 0, ?, ?) ON CONFLICT(ats, board_token) DO NOTHING`,
+      params: [c.name, c.ats, c.boardToken, Math.trunc(at), c.tier ?? "fast"],
     };
   }
 
@@ -400,9 +472,10 @@ export class Store {
     await this.driver.query(this.stmtSetCompanyState(id, state));
   }
 
+  /** Failing active fast-tier companies (wide boards are left out, like the watchdog share). */
   async failingCompanies(): Promise<CompanyRow[]> {
     const rows = await this.driver.query<Raw>({
-      sql: "SELECT * FROM companies WHERE state = 'active' AND consecutive_failures >= ? ORDER BY name COLLATE NOCASE",
+      sql: "SELECT * FROM companies WHERE state = 'active' AND tier = 'fast' AND consecutive_failures >= ? ORDER BY name COLLATE NOCASE",
       params: [FAILING_AFTER_CONSECUTIVE],
     });
     return rows.map(toCompany);
@@ -487,17 +560,32 @@ export class Store {
   }
 
   /**
-   * Clears the failure count and error, optionally setting baselined/state/name/seen ids.
-   * `state` is a validation outcome: it only applies while the row is still pending_validation,
-   * so a concurrent /remove (state inactive) is never undone.
+   * Clears the failure count and error, optionally setting baselined/state/name/seen ids, the last
+   * match time and the tier. `state` is a validation outcome: it only applies while the row is
+   * still pending_validation, so a concurrent /remove (state inactive) is never undone.
    */
   stmtCompanySuccess(
     companyId: number,
-    opts: { baselined?: boolean; state?: CompanyState; name?: string; seenIds?: readonly string[] } = {},
+    opts: {
+      baselined?: boolean;
+      state?: CompanyState;
+      name?: string;
+      seenIds?: readonly string[];
+      lastMatchAt?: number;
+      tier?: CompanyTier;
+    } = {},
   ): Statement {
     const sets = ["consecutive_failures = 0", "last_error = NULL"];
     const params: unknown[] = [];
     if (opts.baselined) sets.push("baselined = 1");
+    if (opts.lastMatchAt !== undefined) {
+      sets.push("last_match_at = ?");
+      params.push(Math.trunc(opts.lastMatchAt));
+    }
+    if (opts.tier) {
+      sets.push("tier = ?");
+      params.push(opts.tier);
+    }
     if (opts.seenIds) {
       sets.push("seen_ids = ?");
       params.push(JSON.stringify(opts.seenIds));
@@ -760,16 +848,21 @@ export class Store {
     const rows = await this.driver.query<Raw>({
       sql: `SELECT
           (SELECT COUNT(*) FROM jobs WHERE status = 'sent' AND sent_at >= ?) AS sent_today,
-          (SELECT COUNT(*) FROM companies WHERE state = 'active') AS active,
-          (SELECT COUNT(*) FROM companies WHERE state = 'active' AND consecutive_failures >= ?) AS failing,
+          (SELECT COUNT(*) FROM companies WHERE state = 'active' AND tier = 'fast') AS fast,
+          (SELECT COUNT(*) FROM companies WHERE state = 'active' AND tier = 'wide') AS wide,
+          (SELECT COUNT(*) FROM companies WHERE state = 'active' AND tier = 'fast' AND consecutive_failures >= ?) AS failing,
           (SELECT COUNT(*) FROM companies WHERE state = 'pending_validation') AS pending_validation,
           (SELECT COUNT(*) FROM jobs WHERE status = 'pending') AS pending`,
       params: [sinceMidnightUtc, FAILING_AFTER_CONSECUTIVE],
     });
     const r = rows[0] ?? {};
+    const fast = num(r.fast ?? 0);
+    const wide = num(r.wide ?? 0);
     return {
       sentToday: num(r.sent_today ?? 0),
-      active: num(r.active ?? 0),
+      active: fast + wide,
+      fast,
+      wide,
       failing: num(r.failing ?? 0),
       pendingValidation: num(r.pending_validation ?? 0),
       pending: num(r.pending ?? 0),

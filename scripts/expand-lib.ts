@@ -1,7 +1,9 @@
 // Pure helpers for scripts/expand-companies.ts (tested in test/expand-lib.test.ts).
 import { SLUG_PATTERN } from "../src/core/ats/detect";
 import { ATS_KINDS, type AtsKind, type FetchResult, type NormalizedJob } from "../src/core/ats/types";
+import { DEMOTE_AFTER_MS } from "../src/core/config";
 import { matchesTarget } from "../src/core/match/rules";
+import type { CompanyState, CompanyTier } from "../src/core/store/db";
 import { nameKey, refKey } from "./seed-lib";
 
 export interface ExpandCandidate {
@@ -187,8 +189,74 @@ export function qualify(probes: readonly ExpandProbe[]): QualifiedCompany[] {
   return out;
 }
 
+/** A live board found by probing, with the tier it should start in. */
+export interface ClassifiedBoard extends QualifiedCompany {
+  tier: CompanyTier;
+}
+
+export interface ProbeClassification {
+  /** Live boards to insert, ranked (fast first), one board per company. */
+  boards: ClassifiedBoard[];
+  /** Boards that do not exist (404 / unknown site): never inserted. */
+  dead: number;
+  /** Boards that failed for another reason (timeout, HTTP error, unreadable): skipped this time. */
+  failed: number;
+}
+
+/**
+ * Sorts probes into tiers: a board that answered with at least one open job passing
+ * matchesTarget starts 'fast'; any other board that answered OK (even with no open jobs) starts
+ * 'wide'. not_found boards are dead and other failures are skipped (re-probed next run).
+ */
+export function classifyProbes(probes: readonly ExpandProbe[]): ProbeClassification {
+  let dead = 0;
+  let failed = 0;
+  const live: QualifiedCompany[] = [];
+  for (const { candidate, result } of probes) {
+    if (!result.ok) {
+      if (result.kind === "not_found") dead++;
+      else failed++;
+      continue;
+    }
+    live.push({
+      name: displayName(candidate.token, candidate.name),
+      ats: candidate.ats,
+      token: candidate.token,
+      source: candidate.source,
+      jobs: result.value.length,
+      passing: result.value.filter((j) => matchesTarget(j).pass).length,
+    });
+  }
+  const boards = rankQualified(live).map((c): ClassifiedBoard => ({ ...c, tier: c.passing > 0 ? "fast" : "wide" }));
+  return { boards, dead, failed };
+}
+
+export interface DemotionCandidate {
+  id: number;
+  state: CompanyState;
+  tier: CompanyTier;
+  lastMatchAt: number | null;
+  createdAt: number;
+}
+
+/**
+ * Weekly demotion rule: an active fast-tier company moves to wide when it has had no new matching
+ * job within DEMOTE_AFTER_MS (30 days; never matched counts as no match) and was added more than
+ * DEMOTE_AFTER_MS ago (so a newly added board gets a month to show a match).
+ */
+export function shouldDemote(c: DemotionCandidate, now: number, after: number = DEMOTE_AFTER_MS): boolean {
+  if (c.state !== "active" || c.tier !== "fast") return false;
+  if (now - c.createdAt <= after) return false;
+  return c.lastMatchAt === null || now - c.lastMatchAt > after;
+}
+
+/** Ids of the companies to demote from fast to wide. */
+export function selectDemotions(companies: readonly DemotionCandidate[], now: number, after: number = DEMOTE_AFTER_MS): number[] {
+  return companies.filter((c) => shouldDemote(c, now, after)).map((c) => c.id);
+}
+
 /** Ranks by passing jobs (then open jobs, then name) and keeps one board per company. */
-export function rankQualified(list: readonly QualifiedCompany[]): QualifiedCompany[] {
+export function rankQualified<T extends QualifiedCompany>(list: readonly T[]): T[] {
   const ranked = [...list].sort(
     (a, b) => b.passing - a.passing || b.jobs - a.jobs || a.name.localeCompare(b.name) || refKey(a).localeCompare(refKey(b)),
   );
@@ -201,13 +269,13 @@ export function rankQualified(list: readonly QualifiedCompany[]): QualifiedCompa
   });
 }
 
-/** How many companies to add so the active total reaches `target` (never negative). */
+/** How many companies to add so the active total reaches `target` (never negative; Infinity = no cap). */
 export function slotsToFill(activeCount: number, target: number): number {
   return Math.max(0, Math.trunc(target) - activeCount);
 }
 
-/** The top-ranked companies that fit in the open slots. */
-export function selectToInsert(list: readonly QualifiedCompany[], activeCount: number, target: number): QualifiedCompany[] {
+/** The top-ranked companies that fit in the open slots (all of them when `target` is Infinity). */
+export function selectToInsert<T extends QualifiedCompany>(list: readonly T[], activeCount: number, target: number): T[] {
   return rankQualified(list).slice(0, slotsToFill(activeCount, target));
 }
 

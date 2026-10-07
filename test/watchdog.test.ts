@@ -37,9 +37,11 @@ function fakeTelegram(fail = false) {
   };
 }
 
-async function seedCompanies(total: number, failing: number, namePrefix = "Co") {
+async function seedCompanies(total: number, failing: number, namePrefix = "Co", tier: "fast" | "wide" = "fast") {
   for (let i = 0; i < total; i++) {
-    const { company } = await store.insertCompany({ name: `${namePrefix} ${i}`, ats: "lever", boardToken: `co-${i}`, state: "active" });
+    const token = `${tier === "fast" ? "co" : "wide"}-${i}`;
+    const { company } = await store.insertCompany({ name: `${namePrefix} ${i}`, ats: "lever", boardToken: token, state: "active" });
+    if (tier === "wide") await env.DB.prepare("UPDATE companies SET tier = 'wide' WHERE id = ?").bind(company.id).run();
     if (i < failing) {
       await env.DB.prepare("UPDATE companies SET consecutive_failures = ? WHERE id = ?")
         .bind(FAILING_AFTER_CONSECUTIVE, company.id)
@@ -56,6 +58,8 @@ async function polled(agoMs: number) {
 const counts = (o: Partial<StatusCounts> = {}): StatusCounts => ({
   sentToday: 0,
   active: 10,
+  fast: 10,
+  wide: 0,
   failing: 0,
   pendingValidation: 0,
   pending: 0,
@@ -87,10 +91,20 @@ describe("evaluateHealth", () => {
 
   it("warns at 30% failing but not at 10%", () => {
     const settings = { paused: false, excludedWords: [], lastSuccessfulPollAt: T0 - HOUR };
-    expect(evaluateHealth({ settings, counts: counts({ active: 30, failing: 9 }), now: T0 }).warnings).toEqual([
-      "⚠️ 9 of 30 companies are failing. Send /companies to see which.",
+    expect(evaluateHealth({ settings, counts: counts({ active: 30, fast: 30, failing: 9 }), now: T0 }).warnings).toEqual([
+      "⚠️ 9 of 30 fast-checked companies are failing. Send /status to see which.",
     ]);
-    expect(evaluateHealth({ settings, counts: counts({ active: 30, failing: 3 }), now: T0 }).warnings).toEqual([]);
+    expect(evaluateHealth({ settings, counts: counts({ active: 30, fast: 30, failing: 3 }), now: T0 }).warnings).toEqual([]);
+  });
+
+  it("computes the failing share over the fast tier only", () => {
+    const settings = { paused: false, excludedWords: [], lastSuccessfulPollAt: T0 - HOUR };
+    // 9 failing of 30 fast = 30% (warn), even though it is only 9% of all 100 active boards.
+    expect(evaluateHealth({ settings, counts: counts({ active: 100, fast: 30, wide: 70, failing: 9 }), now: T0 }).warnings).toEqual([
+      "⚠️ 9 of 30 fast-checked companies are failing. Send /status to see which.",
+    ]);
+    // No fast boards at all: nothing to compare against.
+    expect(evaluateHealth({ settings, counts: counts({ active: 70, fast: 0, wide: 70, failing: 0 }), now: T0 }).warnings).toEqual([]);
   });
 });
 
@@ -119,7 +133,7 @@ describe("runWatchdog", () => {
     await polled(HOUR);
     const tg = fakeTelegram();
     expect(await runWatchdog(store, tg, OWNER, T0)).toEqual({ sent: true });
-    expect(tg.sent[0]!.html).toContain("3 of 10 companies are failing");
+    expect(tg.sent[0]!.html).toContain("3 of 10 fast-checked companies are failing");
   });
 
   it("combines both warnings into one message", async () => {
@@ -129,7 +143,17 @@ describe("runWatchdog", () => {
     await runWatchdog(store, tg, OWNER, T0);
     expect(tg.sent).toHaveLength(1);
     expect(tg.sent[0]!.html).toContain("No successful job check");
-    expect(tg.sent[0]!.html).toContain("3 of 10 companies are failing");
+    expect(tg.sent[0]!.html).toContain("3 of 10 fast-checked companies are failing");
+  });
+
+  it("ignores failing wide-tier boards", async () => {
+    await seedCompanies(10, 1);
+    await seedCompanies(10, 10, "Wide", "wide");
+    await polled(HOUR);
+    expect(await store.statusCounts(T0)).toMatchObject({ active: 20, fast: 10, wide: 10, failing: 1 });
+    const tg = fakeTelegram();
+    expect(await runWatchdog(store, tg, OWNER, T0)).toEqual({ sent: false });
+    expect(tg.sent).toHaveLength(0);
   });
 
   it("does not warn when 10% of companies are failing", async () => {
@@ -180,16 +204,26 @@ describe("buildStatus", () => {
     await store.setSetting("last_poll_stats", { companiesOk: 8, companiesFailed: 2, sent: 4 });
 
     const html = await buildStatus(store, T0);
-    expect(html).toContain("Companies failing: 2");
+    expect(html).toContain("Fast companies failing: 2");
     expect(html).toContain("A&lt;B &amp; Co");
     expect(html).not.toContain("A<B");
     expect(html).toContain("Co 1");
-    expect(html).toContain("Companies active: 10");
+    expect(html).toContain("Companies: 10 fast (every 10 min), 0 wide (hourly)");
     expect(html).toContain("Companies waiting for validation: 1");
     expect(html).toContain("Last check: 2h ago");
     expect(html).toContain("Last successful check: 2h ago");
     expect(html).toContain("Last poll: 8 boards ok, 2 failed, 4 jobs sent");
     expect(html).toContain("Running");
+  });
+
+  it("shows the tier split and lists only failing fast-tier companies", async () => {
+    await seedCompanies(3, 1, "Fast");
+    await seedCompanies(5, 2, "Wide", "wide");
+    const html = await buildStatus(store, T0);
+    expect(html).toContain("Companies: 3 fast (every 10 min), 5 wide (hourly)");
+    expect(html).toContain("Fast companies failing: 1");
+    expect(html).toContain("Fast 0");
+    expect(html).not.toContain("Wide 0");
   });
 
   it("shows never-polled and paused state", async () => {

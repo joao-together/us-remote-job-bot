@@ -1,14 +1,24 @@
 # US Remote Job Bot
 
-A private Telegram bot that checks the public job boards of ~280 remote-friendly companies (expandable to ~1,000) every 10 minutes and sends you each new **US-remote software engineering** role (mid-level and up, including DevOps/SRE, platform, data and ML engineering), with a direct apply link and ✅ Applied / ❌ Skip buttons.
+A private Telegram bot that watches the public job boards of every company it can find on Greenhouse, Lever, Ashby and Workable (~9,000 live boards once expanded) and sends you each new **US-remote software engineering** role (mid-level and up, including DevOps/SRE, platform, data and ML engineering), with a direct apply link and ✅ Applied / ❌ Skip buttons.
 
 It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sources paid job aggregators scrape) and runs entirely on free tiers:
 
 | Part | Runs on | Does |
 |---|---|---|
 | Poller | GitHub Actions, started every 10 min by the Worker (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
-| Bot | Cloudflare Worker | Commands, button taps, watchdog warnings |
+| Company list | GitHub Actions, started weekly by the Worker | Adds new live boards, moves quiet boards to the hourly tier |
+| Bot | Cloudflare Worker | Commands, button taps, watchdog warnings, starting the two workflows |
 | Storage | Cloudflare D1 | Companies, seen jobs, invited users, per-user deliveries, settings |
+
+## How it works
+
+- **Two tiers.** Every company is either **fast** or **wide**. Fast boards — the ones that have produced a matching role recently — are checked on every run, every 10 minutes. Wide boards (thousands of boards that rarely or never post a matching role) are split into 6 groups by id and one group is checked per run, so each is checked about **once an hour**.
+- **Promotion.** The moment a wide board posts a new role that passes the match rules, you get the alert and the board becomes fast.
+- **Demotion.** Once a week, fast boards with no new matching role in 30 days (and added more than 30 days ago) become wide. Boards you `/add` start fast.
+- **Each run** (Store.listCompaniesForRun) checks: all fast boards, this 10-minute slot's wide boards, boards waiting for `/add` validation, and up to 400 newly added boards that still need their silent baseline. With ~1,100 fast and ~8,000 wide boards that is ~2,450 boards per run, about 3–5 minutes at 24 requests in flight.
+- **Schedules** come from the Worker's cron triggers (GitHub's own scheduler is unreliable): `*/10 * * * *` starts *Poll job boards*, `43 * * * *` runs the watchdog, `0 6 * * 1` (Mondays 06:00 UTC) starts *Expand company list*.
+- **Free tiers.** D1 reads only the rows a run polls (one index serves every part of the selection), roughly 0.4M rows read and 10k–40k rows written per day at ~9,000 boards (limits: 5M and 100k; details in `src/core/config.ts` above `DB_BATCH_SIZE`). A public repo has unlimited Actions minutes.
 
 ## Setup
 
@@ -75,16 +85,17 @@ Send `/status` to the bot — it should reply.
 | `TELEGRAM_BOT_TOKEN` | bot token |
 | `OWNER_USER_ID` | your user id |
 
-4. Run *Actions → Poll job boards → Run workflow* once. The first runs record every currently open job **silently** (60 companies per run, so the full list is baselined within ~30–60 minutes); alerts for a company start with jobs posted after its baseline.
+4. So the Worker can start the workflows, create a fine-grained GitHub token (this repo only, *Actions: Read and write*), then `npx wrangler secret put GITHUB_DISPATCH_TOKEN` and set `GITHUB_REPO` in `wrangler.toml`; `npm run deploy`.
+5. Run *Actions → Poll job boards → Run workflow* once. The first runs record every currently open job **silently** (400 companies per run); alerts for a company start with jobs posted after its baseline.
 
 ## Using the bot
 
 | Command | What it does |
 |---|---|
-| `/status` | Last check, companies watched/failing, jobs sent today |
+| `/status` | Last check, companies per tier (fast every 10 min / wide hourly), failing fast companies, jobs sent today |
 | `/add <link>` | Watch a company, e.g. `/add https://jobs.lever.co/acme`. Confirmed within the hour. |
 | `/remove <name>` | Stop watching a company (`/remove lever:acme` if the name is ambiguous) |
-| `/companies` | List watched companies (⚠️ = failing) |
+| `/companies` | List fast-tier companies (⚠️ = failing) and how many wide-tier ones are watched |
 | `/exclude add <word>` | Hide jobs mentioning a word or phrase (title or description) |
 | `/exclude remove <word>` / `/exclude list` | Manage excluded words |
 | `/pause` / `/resume` | Stop/start alerts. Jobs found while paused are never sent later. |
@@ -101,7 +112,12 @@ Each alert shows the title, company, location, salary (when the board lists it),
 
 ### Growing the company list
 
-*Actions → Expand company list → Run workflow* (inputs: `target_total`, default 1000; `dry_run`). It probes boards from public lists (remoteintech/remote-jobs and the Feashliaa/job-board-aggregator Greenhouse/Lever/Ashby token lists), keeps boards with at least one open job that passes the rules above, and adds the best ones (most passing jobs first) until `target_total` companies are active. It stops probing after 25 minutes and uses what it found; run it again to fill any remaining slots. New companies are baselined silently by the poller, 60 per run (~2 hours for 700). Run with `dry_run` first to see the summary without writing anything.
+*Expand company list* runs weekly on its own (Mondays 06:00 UTC, started by the Worker) and can be run by hand from *Actions → Expand company list → Run workflow* (inputs: `dry_run`; `target_total`, optional cap on active companies, blank = no cap). Each run:
+
+1. **Demotes** fast companies with no new matching role in 30 days and added more than 30 days ago to the wide tier.
+2. **Probes** every board in public lists (remoteintech/remote-jobs and the Feashliaa/job-board-aggregator Greenhouse/Lever/Ashby token lists) not already in the database (removed companies are never re-added) and adds **every live board**: boards with at least one open role passing the rules above start **fast**, other boards that answered start **wide**. Boards that don't exist are skipped; boards that timed out or errored are tried again next week.
+
+It stops probing after 30 minutes and uses what it found. New companies are baselined silently by the poller, 400 per run (~4 hours for 9,000). The first large expansion writes ~50k D1 rows (inserts + baselines) on top of normal use (limit 100k/day); if the D1 dashboard already shows more than ~40k rows written per day, split it over two days with `target_total`. Run with `dry_run` first to see the summary without writing anything.
 
 ### Inviting people
 
@@ -122,7 +138,7 @@ If someone blocks the bot, the poller logs the failed send and carries on with e
 ## Troubleshooting
 
 - **"No successful job check for Xh"** — the Worker's hourly watchdog didn't see a poller run. Check *Actions → Poll job boards*: workflow disabled, minutes exhausted, or a wrong secret.
-- **"N of M companies are failing"** — `/companies` shows which. Boards move or close; `/remove` them or re-add with the new link.
+- **"N of M fast-checked companies are failing"** — `/status` lists them (wide-tier boards are left out of this warning; many are small and flaky). Boards move or close; `/remove` them or re-add with the new link.
 - **Free-tier limits relied on:** GitHub Actions 2,000 min/month (private), D1 100k rows written/day, Workers 100k requests/day.
 
 ## Rotating secrets
@@ -138,5 +154,5 @@ npm test            # Vitest in the Workers runtime (no network)
 npm run typecheck
 npm run poll        # run the poller locally (needs the five env vars above)
 npm run seed:build  # rebuild seed/companies.{json,sql} from public lists
-npm run expand      # add companies up to EXPAND_TARGET_TOTAL (default 1000); --dry-run to preview
+npm run expand      # weekly demotion + add every live board (EXPAND_TARGET_TOTAL caps it); --dry-run to preview
 ```

@@ -1,7 +1,11 @@
-// Grows the watched company list toward EXPAND_TARGET_TOTAL (default 1000) active companies.
-// Probes candidate boards from public lists and adds those with at least one open job passing the
-// match rules (evidence of US-remote engineering hiring), best first, as active + unbaselined so the
-// poller baselines them silently. Run via the "Expand company list" workflow; `--dry-run` writes nothing.
+// Weekly company-list maintenance (started by the Worker's "0 6 * * 1" cron, or by hand):
+// 1. Demotes fast-tier companies with no new matching job in 30 days (and added more than 30 days
+//    ago) to the wide tier, which is checked hourly instead of every 10 minutes.
+// 2. Probes candidate boards from public lists and adds every live board not already in the DB, as
+//    active + unbaselined so the poller baselines them silently: boards with at least one open job
+//    passing the match rules start 'fast', other boards that answered start 'wide'. Boards that
+//    don't exist are not inserted. EXPAND_TARGET_TOTAL optionally caps the active total (default:
+//    no cap). Run via the "Expand company list" workflow; `--dry-run` writes nothing.
 import path from "node:path";
 import { adapterFor } from "../src/core/ats/detect";
 import type { AtsKind, Fetcher } from "../src/core/ats/types";
@@ -12,13 +16,13 @@ import { errorMessage } from "../src/core/util";
 import {
   atsFromListPath,
   buildCandidates,
+  classifyProbes,
   countByAts,
   envNumber,
   interleave,
   mapPoolWithDeadline,
   parseTokenList,
-  qualify,
-  rankQualified,
+  selectDemotions,
   selectToInsert,
   slotsToFill,
   type ExpandCandidate,
@@ -28,8 +32,9 @@ import { nameKey, parseFrontMatter, resolveCandidate } from "./seed-lib";
 
 const startedAt = Date.now();
 const dryRun = process.argv.includes("--dry-run") || process.env.EXPAND_DRY_RUN === "true";
-const target = envNumber(process.env.EXPAND_TARGET_TOTAL, 1000);
-const budgetMin = envNumber(process.env.EXPAND_TIME_BUDGET_MIN, 25);
+/** Optional cap on active companies; unset or blank means every live board is added. */
+const target = envNumber(process.env.EXPAND_TARGET_TOTAL, Infinity);
+const budgetMin = envNumber(process.env.EXPAND_TIME_BUDGET_MIN, 30);
 const deadline = startedAt + budgetMin * 60_000;
 const PROBE_CONCURRENCY = 16;
 const PROBE_TIMEOUT_MS = 15_000;
@@ -130,15 +135,24 @@ async function main(): Promise<void> {
       apiToken: requireEnv("CF_D1_API_TOKEN"),
     }),
   );
-  const existing = await store.listCompanies({ includeInactive: true });
+  // Without seen_ids: ~9k rows of those would be a large response for nothing.
+  const existing = await store.listCompaniesBrief();
   const activeBefore = existing.filter((c) => c.state !== "inactive").length;
-  const slots = slotsToFill(activeBefore, target);
+
+  // 1. Weekly demotion of fast companies without a recent match.
+  const demote = selectDemotions(existing, startedAt);
+  if (!dryRun && demote.length > 0) await store.runBatch(store.stmtsSetTier(demote, "wide"));
+  const tierCount = (tier: string) => existing.filter((c) => c.state === "active" && c.tier === tier).length;
   console.log(
-    `DB: ${existing.length} companies (${activeBefore} active or pending). Target ${target} -> ${slots} to add. ` +
-      `Budget ${budgetMin} min.${dryRun ? " DRY RUN." : ""}`,
+    `DB: ${existing.length} companies (${activeBefore} active or pending; ${tierCount("fast")} fast, ${tierCount("wide")} wide). ` +
+      `${dryRun ? "Would demote" : "Demoted"} ${demote.length} fast -> wide (no match in 30 days).`,
   );
+
+  // 2. Add new live boards.
+  const slots = slotsToFill(activeBefore, target);
+  console.log(`Target ${Number.isFinite(target) ? target : "none"} -> ${Number.isFinite(slots) ? slots : "all live boards"} to add. Budget ${budgetMin} min.${dryRun ? " DRY RUN." : ""}`);
   if (slots === 0) {
-    console.log("Already at or above the target; nothing to do.");
+    console.log("Already at or above the target; nothing to add.");
     return;
   }
 
@@ -182,25 +196,27 @@ async function main(): Promise<void> {
 
   const failures: Record<string, number> = {};
   for (const p of probes) if (!p.result.ok) failures[p.result.kind] = (failures[p.result.kind] ?? 0) + 1;
-  const qualifying = rankQualified(qualify(probes));
-  const chosen = selectToInsert(qualifying, activeBefore, target);
+  const { boards, dead, failed } = classifyProbes(probes);
+  const chosen = selectToInsert(boards, activeBefore, target);
+  const chosenFast = chosen.filter((c) => c.tier === "fast");
+  const chosenWide = chosen.filter((c) => c.tier === "wide");
 
   if (!dryRun && chosen.length > 0) {
     const at = Date.now();
-    await store.runBatch(chosen.map((c) => store.stmtInsertActiveCompany({ name: c.name, ats: c.ats, boardToken: c.token }, at)));
+    // The driver sends these in DB_BATCH_SIZE chunks, one D1 transaction each.
+    await store.runBatch(chosen.map((c) => store.stmtInsertActiveCompany({ name: c.name, ats: c.ats, boardToken: c.token, tier: c.tier }, at)));
   }
-  const activeAfter = dryRun
-    ? activeBefore
-    : (await store.listCompanies({ includeInactive: true })).filter((c) => c.state !== "inactive").length;
+  const activeAfter = dryRun ? activeBefore : (await store.listCompaniesBrief()).filter((c) => c.state !== "inactive").length;
 
   console.log("---- Summary ----");
+  console.log(`Demoted fast -> wide: ${demote.length}${dryRun ? " (dry run, not written)" : ""}`);
   console.log(`Candidates listed: ${rawCount}; new boards: ${candidates.length}`);
-  console.log(`Probed: ${probes.length}${stoppedEarly ? " (stopped by time budget)" : ""}; failures: ${probes.length - probes.filter((p) => p.result.ok).length} ${JSON.stringify(failures)}`);
-  console.log(`Qualifying (>=1 open job passing the rules): ${qualifying.length} ${JSON.stringify(countByAts(qualifying))}`);
-  console.log(`${dryRun ? "Would insert" : "Inserted"}: ${chosen.length} ${JSON.stringify(countByAts(chosen))}`);
+  console.log(`Probed: ${probes.length}${stoppedEarly ? " (stopped by time budget)" : ""}; dead (not found): ${dead}; other failures (skipped): ${failed} ${JSON.stringify(failures)}`);
+  console.log(`Live boards: ${boards.length} (${boards.filter((b) => b.tier === "fast").length} with a passing job)`);
+  console.log(`${dryRun ? "Would insert" : "Inserted"}: ${chosen.length} = ${chosenFast.length} fast ${JSON.stringify(countByAts(chosenFast))} + ${chosenWide.length} wide ${JSON.stringify(countByAts(chosenWide))}`);
   console.log(`Active companies: ${activeBefore} -> ${dryRun ? activeBefore + chosen.length + " (projected)" : activeAfter}`);
-  for (const c of chosen.slice(0, 25)) console.log(`  ${c.passing} passing / ${c.jobs} open  ${c.name} (${c.ats}:${c.token})`);
-  if (chosen.length > 25) console.log(`  … and ${chosen.length - 25} more`);
+  for (const c of chosenFast.slice(0, 25)) console.log(`  ${c.passing} passing / ${c.jobs} open  ${c.name} (${c.ats}:${c.token})`);
+  if (chosenFast.length > 25) console.log(`  … and ${chosenFast.length - 25} more fast`);
   console.log(`Elapsed: ${((Date.now() - startedAt) / 60_000).toFixed(1)} min`);
 }
 

@@ -1,19 +1,23 @@
 name: Expand company list
 
-# Manual: probes public board lists and adds companies with open US-remote engineering roles
-# until target_total active companies are watched. New companies are baselined silently by the
-# poller (60 per run). Shares the poller's concurrency group so the two never overlap.
+# Weekly (started Mondays 06:00 UTC by the Cloudflare Worker's "0 6 * * 1" cron through the
+# workflow_dispatch API, because GitHub's own `schedule` trigger is unreliable), or by hand.
+# Demotes fast-tier companies without a match in 30 days to the wide tier, then probes public
+# board lists and adds every live board not yet watched: boards with a currently matching role as
+# 'fast' (checked every 10 min), the rest as 'wide' (checked hourly). New companies are baselined
+# silently by the poller (400 per run). Shares the poller's concurrency group so the two never overlap.
 on:
   workflow_dispatch:
     inputs:
-      target_total:
-        description: Total active companies to reach
-        type: number
-        default: 1000
       dry_run:
-        description: Only report what would be added
+        description: Only report what would be demoted and added
         type: boolean
         default: false
+      target_total:
+        description: Optional cap on total active companies (blank = add every live board)
+        type: string
+        required: false
+        default: ""
 
 concurrency:
   group: poll
@@ -42,4 +46,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           EXPAND_TARGET_TOTAL: ${{ inputs.target_total }}
           EXPAND_DRY_RUN: ${{ inputs.dry_run }}
-          EXPAND_TIME_BUDGET_MIN: 25
+          EXPAND_TIME_BUDGET_MIN: 30

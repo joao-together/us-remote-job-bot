@@ -316,10 +316,14 @@ async function companiesCommand({ store }: CommandDeps, reply: Reply): Promise<v
   const pending = companies.filter((c) => c.state === "pending_validation");
   if (companies.length === 0) return reply("Not watching any companies yet. Add one with /add &lt;board link&gt;.");
 
+  // Only fast-tier boards are listed by name: thousands of wide boards would take dozens of messages.
+  const fast = active.filter((c) => c.tier === "fast");
+  const wide = active.length - fast.length;
   const lines = [`<b>Watching ${active.length} ${active.length === 1 ? "company" : "companies"}</b>`];
-  const failing = active.filter((c) => c.failing).length;
+  if (wide > 0) lines.push(`${fast.length} checked every 10 minutes (listed below), ${wide} more checked hourly.`);
+  const failing = fast.filter((c) => c.failing).length;
   if (failing > 0) lines.push(`⚠️ = failing (${failing})`);
-  lines.push(...active.map((c) => `${escapeHtml(c.name)}${c.failing ? " ⚠️" : ""}`));
+  lines.push(...fast.map((c) => `${escapeHtml(c.name)}${c.failing ? " ⚠️" : ""}`));
   if (pending.length > 0) {
     lines.push("", `<b>Waiting for validation (${pending.length})</b>`, ...pending.map(describeBoard));
   }

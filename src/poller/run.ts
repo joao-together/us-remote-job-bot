@@ -1,6 +1,6 @@
 import { adapterFor } from "../core/ats/detect";
 import { ATS_NAMES, type FetchFailure, type FetchResult, type Fetcher, type NormalizedJob } from "../core/ats/types";
-import { BASELINE_COMPANIES_PER_RUN, FETCH_CONCURRENCY } from "../core/config";
+import { FETCH_CONCURRENCY, WIDE_SLOT_MS, WIDE_SLOTS } from "../core/config";
 import { findExcludedWord, matchesTarget, normalizeTitle, prepareExcludedWords } from "../core/match/rules";
 import type { Statement } from "../core/store/driver";
 import type { CompanyRow, NewJob, PollStats, RepostCandidate, Settings, Store } from "../core/store/db";
@@ -141,6 +141,8 @@ function companyOutcome(
   const newIds = new Set<string>();
   const newlySeen = new Set<string>();
   let matched = 0;
+  // New ids that passed matchesTarget (any non-'seen' row: pending, suppressed, excluded, duplicate).
+  let passed = 0;
 
   for (const job of jobs) {
     if (ctx.known.has(job.id) || oldSeen.has(job.id) || newIds.has(job.id)) continue;
@@ -151,6 +153,7 @@ function companyOutcome(
       newlySeen.add(row.boardJobId);
       continue;
     }
+    passed++;
     if (row.status === "pending" || row.status === "suppressed") matched++;
     statements.push(store.stmtInsertJob(row, ctx.at));
   }
@@ -159,13 +162,16 @@ function companyOutcome(
   const nextSeen = [...onBoard].filter((id) => oldSeen.has(id) || newlySeen.has(id));
   const seenChanged = nextSeen.length !== oldSeen.size || nextSeen.some((id) => !oldSeen.has(id));
 
-  // Write the company row only when something changes, to keep D1 rows-written low.
-  if (company.consecutiveFailures > 0 || baselining || seenChanged) {
+  // Write the company row only when something changes, to keep D1 rows-written low. A new
+  // matching job records last_match_at and promotes a wide board to fast, in the same statement.
+  if (company.consecutiveFailures > 0 || baselining || seenChanged || passed > 0) {
     statements.push(
       store.stmtCompanySuccess(company.id, {
         baselined: baselining || undefined,
         state: validating ? "active" : undefined,
         seenIds: seenChanged ? nextSeen : undefined,
+        lastMatchAt: passed > 0 ? ctx.at : undefined,
+        tier: passed > 0 && company.tier === "wide" ? "fast" : undefined,
       }),
     );
   }
@@ -182,25 +188,24 @@ function companyOutcome(
 }
 
 /**
- * Companies to check this run. Not-yet-baselined active companies are capped at
- * BASELINE_COMPANIES_PER_RUN (lowest ids first) to spread the first-run baseline write burst;
- * the rest wait for later runs. pending_validation companies (from /add) are never capped.
+ * The wide-tier group a run at `at` checks: one of WIDE_SLOTS groups per WIDE_SLOT_MS window, so
+ * runs every 10 minutes cover every wide board about once an hour.
  */
-export function selectForPoll(companies: readonly CompanyRow[], cap = BASELINE_COMPANIES_PER_RUN): CompanyRow[] {
-  let unbaselined = 0;
-  return companies.filter((c) => {
-    if (c.state === "pending_validation" || c.baselined) return true;
-    return unbaselined++ < cap;
-  });
+export function wideSlot(at: number): number {
+  return Math.floor(at / WIDE_SLOT_MS) % WIDE_SLOTS;
 }
 
-/** One poller run: check every board, store new jobs, then deliver pending alerts. */
+/**
+ * One poller run: check every fast board, this slot's wide boards, boards being validated and a
+ * capped batch of not-yet-baselined boards (Store.listCompaniesForRun); store new jobs, then
+ * deliver pending alerts.
+ */
 export async function runPoll(deps: PollDeps): Promise<PollStats> {
   const { store, now } = deps;
   const runStartedAt = now();
   await store.setSetting("last_poll_start_at", runStartedAt);
 
-  const companies = selectForPoll(await store.listCompaniesForPoll());
+  const companies = await store.listCompaniesForRun(wideSlot(runStartedAt));
   const ids = companies.map((c) => c.id);
   // Ids of stored job rows (any status, incl. legacy 'seen' rows); companyOutcome adds seen_ids.
   const known = await store.knownJobIds(ids);

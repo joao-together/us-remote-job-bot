@@ -1,11 +1,12 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { BASELINE_COMPANIES_PER_RUN } from "../src/core/config";
+import { BASELINE_COMPANIES_PER_RUN, WIDE_SLOTS } from "../src/core/config";
 import type { Fetcher } from "../src/core/ats/types";
-import { mapPool, redactError, runPoll, selectForPoll } from "../src/poller/run";
+import { mapPool, redactError, runPoll, wideSlot } from "../src/poller/run";
 import leverFixture from "./fixtures/lever/postings.json";
 import {
   HOUR,
+  T0,
   addCompany,
   emptyBoards,
   greenhouseJob,
@@ -372,43 +373,73 @@ describe("failures", () => {
   });
 });
 
-describe("baseline rate limit (#9)", () => {
-  async function addMany(n: number, opts: { baselined?: boolean } = {}) {
-    const ids: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const token = `co${String(i).padStart(3, "0")}`;
-      boards.lever[token] = [leverPosting(`${token}-1`, SENIOR)];
-      ids.push(await addCompany(t.store, `Co ${i}`, "lever", token, opts));
-    }
-    return ids;
-  }
+/** Inserts `n` lever companies in one batch (lever boards with one senior job each); ids in order. */
+async function addMany(n: number, opts: { baselined?: boolean; tier?: "fast" | "wide"; prefix?: string } = {}) {
+  const prefix = opts.prefix ?? "co";
+  const tokens = Array.from({ length: n }, (_, i) => `${prefix}${String(i).padStart(3, "0")}`);
+  for (const token of tokens) boards.lever[token] = [leverPosting(`${token}-1`, SENIOR)];
+  await env.DB.batch(
+    tokens.map((token, i) =>
+      env.DB.prepare(
+        "INSERT INTO companies (name, ats, board_token, state, baselined, created_at, tier) VALUES (?, 'lever', ?, 'active', ?, ?, ?)",
+      ).bind(`${prefix} ${i}`, token, opts.baselined ? 1 : 0, t.clock.now, opts.tier ?? "fast"),
+    ),
+  );
+  const ids: number[] = [];
+  for (const token of tokens) ids.push(await companyIdByToken(token));
+  return ids;
+}
 
+/** Board tokens the poller fetched (Lever list requests), sorted. */
+function fetchedTokens(): string[] {
+  return t.fetcher.requests
+    .map((r) => /api\.lever\.co\/v0\/postings\/([^/?]+)/.exec(r.url)?.[1])
+    .filter((x): x is string => !!x)
+    .sort();
+}
+
+const SLOT_MS = 10 * 60_000;
+
+/** The first time at or after T0 whose wide slot is this company's. */
+function slotTimeFor(id: number): number {
+  return T0 + (((id % WIDE_SLOTS) - wideSlot(T0) + WIDE_SLOTS) % WIDE_SLOTS) * SLOT_MS;
+}
+
+describe("baseline rate limit (#9)", () => {
   async function baselinedIds() {
     const res = await env.DB.prepare("SELECT id FROM companies WHERE baselined = 1 ORDER BY id").all<{ id: number }>();
     return res.results.map((r) => r.id);
   }
 
-  it("baselines at most BASELINE_COMPANIES_PER_RUN new companies per run, lowest ids first", async () => {
-    expect(BASELINE_COMPANIES_PER_RUN).toBe(60);
-    const ids = await addMany(70);
+  it("baselines at most BASELINE_COMPANIES_PER_RUN new companies per run, lowest ids first, any tier", async () => {
+    expect(BASELINE_COMPANIES_PER_RUN).toBe(400);
+    const fast = await addMany(205);
+    const wide = await addMany(205, { tier: "wide", prefix: "wd" });
+    const ids = [...fast, ...wide];
 
     const first = await poll();
-    expect(first).toMatchObject({ companiesOk: 60, companiesFailed: 0, newJobs: 60 });
-    expect(await baselinedIds()).toEqual(ids.slice(0, 60));
-    expect(t.fetcher.requests).toHaveLength(60);
-    const skipped = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs j JOIN companies c ON c.id = j.company_id WHERE c.baselined = 0").first<{ n: number }>();
+    expect(first).toMatchObject({ companiesOk: 400, companiesFailed: 0, newJobs: 400 });
+    expect(await baselinedIds()).toEqual(ids.slice(0, 400));
+    expect(t.fetcher.requests).toHaveLength(400);
+    const skipped = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM jobs j JOIN companies c ON c.id = j.company_id WHERE c.baselined = 0",
+    ).first<{ n: number }>();
     expect(skipped!.n).toBe(0);
 
+    // Next run (same wide slot, an hour later): every fast company, the wide ones on this slot,
+    // and the last 10 still waiting for their baseline.
     const second = await poll();
-    expect(second).toMatchObject({ companiesOk: 70, companiesFailed: 0, newJobs: 10 });
     expect(await baselinedIds()).toEqual(ids);
+    const slot = wideSlot(t.clock.now - HOUR);
+    const expected = [...fast, ...wide.filter((id, i) => i >= 195 || id % WIDE_SLOTS === slot)];
+    expect(second).toMatchObject({ companiesOk: expected.length, companiesFailed: 0, newJobs: 10 });
     expect(t.telegram.sends).toEqual([]);
   });
 
   it("always processes pending_validation companies and baselined ones, even at the cap", async () => {
     boards.lever.old = [leverPosting("old-1", SENIOR)];
     const old = await addCompany(t.store, "Old", "lever", "old", { baselined: true });
-    await addMany(60);
+    await addMany(BASELINE_COMPANIES_PER_RUN);
     boards.lever.added = [leverPosting("added-1", SENIOR)];
     const added = await addCompany(t.store, "Added", "lever", "added", { state: "pending_validation" });
     boards.lever.late = [leverPosting("late-1", SENIOR)];
@@ -422,15 +453,91 @@ describe("baseline rate limit (#9)", () => {
     expect(await jobStatus("old-1")).toBe("sent");
     expect(await baselinedIds()).toContain(old);
   });
+});
 
-  it("selectForPoll keeps validation and baselined companies outside the cap", () => {
-    const mk = (id: number, state: "active" | "pending_validation", baselined: boolean) =>
-      ({ id, state, baselined }) as Parameters<typeof selectForPoll>[0][number];
-    const picked = selectForPoll(
-      [mk(1, "active", false), mk(2, "pending_validation", false), mk(3, "active", true), mk(4, "active", false)],
-      1,
-    );
-    expect(picked.map((c) => c.id)).toEqual([1, 2, 3]);
+describe("tiers", () => {
+  async function tierRow(id: number) {
+    return env.DB.prepare("SELECT tier, last_match_at, seen_ids, last_error FROM companies WHERE id = ?")
+      .bind(id)
+      .first<{ tier: string; last_match_at: number | null; seen_ids: string; last_error: string | null }>();
+  }
+
+  it("wideSlot cycles through WIDE_SLOTS groups, one per 10 minutes", () => {
+    const base = Math.floor(T0 / SLOT_MS) * SLOT_MS;
+    const slots = Array.from({ length: 7 }, (_, i) => wideSlot(base + i * SLOT_MS));
+    expect(new Set(slots.slice(0, 6)).size).toBe(6);
+    expect(slots[6]).toBe(slots[0]);
+    expect(wideSlot(base + 9 * 60_000)).toBe(slots[0]);
+  });
+
+  it("polls fast companies every run and each wide company only on its slot", async () => {
+    const fast = await addMany(3, { baselined: true, prefix: "fa" });
+    const wide = await addMany(12, { baselined: true, tier: "wide", prefix: "wd" });
+    const tokenOf = (prefix: string, i: number) => `${prefix}${String(i).padStart(3, "0")}`;
+    // Boards without matching roles, so no wide company is promoted during the test.
+    for (const token of Object.keys(boards.lever)) boards.lever[token] = [leverPosting(`${token}-x`, "Office Manager")];
+    const base = Math.floor(T0 / SLOT_MS) * SLOT_MS;
+    const checks = new Map<number, number>();
+
+    for (let run = 0; run < WIDE_SLOTS; run++) {
+      t.clock.now = base + run * SLOT_MS;
+      t.fetcher.requests.length = 0;
+      await runPoll(t.deps);
+      const slot = wideSlot(t.clock.now);
+      const expected = [
+        ...fast.map((_, i) => tokenOf("fa", i)),
+        ...wide.flatMap((id, i) => (id % WIDE_SLOTS === slot ? [tokenOf("wd", i)] : [])),
+      ].sort();
+      expect(fetchedTokens()).toEqual(expected);
+      for (const id of wide) if (id % WIDE_SLOTS === slot) checks.set(id, (checks.get(id) ?? 0) + 1);
+    }
+    // Over WIDE_SLOTS consecutive runs (one hour), every wide company is checked exactly once.
+    expect([...checks.keys()].sort((a, b) => a - b)).toEqual(wide);
+    expect([...checks.values()].every((n) => n === 1)).toBe(true);
+  });
+
+  it("promotes a wide company to fast on its first new match and records last_match_at", async () => {
+    const [id] = await addMany(1, { baselined: true, tier: "wide", prefix: "wd" });
+    const runAt = slotTimeFor(id!);
+    t.clock.now = runAt;
+    // Already baselined with empty seen_ids, so its open senior role is new and matches.
+    await runPoll(t.deps);
+    expect(await jobStatus("wd000-1")).toBe("sent");
+    expect(await tierRow(id!)).toMatchObject({ tier: "fast", last_match_at: runAt });
+
+    // Now fast: checked on the very next run, off its old slot.
+    t.clock.now = runAt + SLOT_MS;
+    expect(wideSlot(t.clock.now)).not.toBe(id! % WIDE_SLOTS);
+    boards.lever.wd000!.push(leverPosting("wd000-2", "Senior Backend Engineer"));
+    await runPoll(t.deps);
+    expect(await jobStatus("wd000-2")).toBe("sent");
+    expect(await tierRow(id!)).toMatchObject({ tier: "fast", last_match_at: runAt + SLOT_MS });
+  });
+
+  it("does not promote or set last_match_at for baseline or non-matching new jobs", async () => {
+    const [id] = await addMany(1, { tier: "wide", prefix: "wd" });
+    await poll(); // baseline: the matching wd000-1 is only recorded as seen
+    expect(await tierRow(id!)).toMatchObject({ tier: "wide", last_match_at: null });
+
+    t.clock.now = slotTimeFor(id!) + 2 * HOUR;
+    boards.lever.wd000!.push(leverPosting("x-1", "Office Manager"));
+    await runPoll(t.deps);
+    expect(JSON.parse((await tierRow(id!))!.seen_ids)).toContain("x-1");
+    expect(await tierRow(id!)).toMatchObject({ tier: "wide", last_match_at: null });
+  });
+
+  it("writes nothing to a wide company's row when its board is unchanged", async () => {
+    const [id] = await addMany(1, { baselined: true, tier: "wide", prefix: "wd" });
+    boards.lever.wd000 = [leverPosting("x-1", "Office Manager")];
+    t.clock.now = slotTimeFor(id!);
+    await runPoll(t.deps);
+    await env.DB.prepare("UPDATE companies SET last_error = 'marker' WHERE id = ?").bind(id).run();
+    const snapshot = await tierRow(id!);
+    t.clock.now += HOUR;
+    t.fetcher.requests.length = 0;
+    await runPoll(t.deps);
+    expect(fetchedTokens()).toEqual(["wd000"]);
+    expect(await tierRow(id!)).toEqual(snapshot);
   });
 });
 

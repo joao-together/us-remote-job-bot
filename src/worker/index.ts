@@ -3,7 +3,7 @@ import { bindingDriver } from "../core/store/driver-binding";
 import { TelegramClient, TelegramError } from "../core/telegram/client";
 import { redactSecrets } from "../core/util";
 import { handleUpdate } from "./commands";
-import { dispatchPoll, POLL_CRON } from "./dispatch";
+import { dispatchPoll, dispatchWorkflow, EXPAND_CRON, EXPAND_WORKFLOW, POLL_CRON } from "./dispatch";
 import type { WorkerEnv } from "./env";
 import { runWatchdog } from "./watchdog";
 
@@ -60,10 +60,16 @@ export default {
   },
 
   async scheduled(controller: ScheduledController, env: WorkerEnv): Promise<void> {
+    const github = { token: env.GITHUB_DISPATCH_TOKEN, repo: env.GITHUB_REPO };
     if (controller.cron === POLL_CRON) {
-      await dispatchPoll({ token: env.GITHUB_DISPATCH_TOKEN, repo: env.GITHUB_REPO });
+      await dispatchPoll(github);
       return;
     }
+    if (controller.cron === EXPAND_CRON) {
+      await dispatchWorkflow(github, EXPAND_WORKFLOW);
+      return;
+    }
+    // WATCHDOG_CRON (and any other cron) runs the health watchdog.
     const store = new Store(bindingDriver(env.DB));
     const telegram = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN });
     await runWatchdog(store, telegram, env.OWNER_USER_ID, Date.now());

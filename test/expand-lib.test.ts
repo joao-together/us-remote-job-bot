@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { FetchResult, NormalizedJob } from "../src/core/ats/types";
+import { DEMOTE_AFTER_MS } from "../src/core/config";
 import {
   atsFromListPath,
   buildCandidates,
+  classifyProbes,
   countByAts,
   displayName,
   envNumber,
@@ -11,8 +13,11 @@ import {
   parseTokenList,
   qualify,
   rankQualified,
+  selectDemotions,
   selectToInsert,
+  shouldDemote,
   slotsToFill,
+  type DemotionCandidate,
   type ExpandCandidate,
   type ExpandProbe,
   type QualifiedCompany,
@@ -129,6 +134,107 @@ describe("qualify", () => {
       { name: "Acme", ats: "greenhouse", token: "acme", source: "t", jobs: 3, passing: 2 },
       { name: "Data Co", ats: "greenhouse", token: "data-co", source: "t", jobs: 2, passing: 1 },
     ]);
+  });
+});
+
+describe("classifyProbes", () => {
+  it("sorts live boards into fast (a passing job) and wide (answered OK), and counts dead and failed boards", () => {
+    const probes = [
+      probe("acme", { ok: true, value: [job("Senior Backend Engineer"), job("Staff SRE"), job("Recruiter")] }, "Acme"),
+      probe("onsite", { ok: true, value: [job("Senior Backend Engineer", "Austin, TX (On-site)")] }),
+      probe("junior", { ok: true, value: [job("Junior Software Engineer")] }),
+      probe("empty", { ok: true, value: [] }),
+      probe("dead", { ok: false, kind: "not_found", message: "404" }),
+      probe("dead-too", { ok: false, kind: "not_found", message: "Lever site not found" }),
+      probe("slow", { ok: false, kind: "timeout", message: "timed out" }),
+      probe("broken", { ok: false, kind: "http_error", message: "HTTP 500" }),
+      probe("data-co", { ok: true, value: [job("Data Engineer"), job("Sales Engineer")] }),
+    ];
+    const { boards, dead, failed } = classifyProbes(probes);
+    expect(dead).toBe(2);
+    expect(failed).toBe(2);
+    expect(boards.map((b) => [b.token, b.tier, b.passing, b.jobs])).toEqual([
+      ["acme", "fast", 2, 3],
+      ["data-co", "fast", 1, 2],
+      ["junior", "wide", 0, 1],
+      ["onsite", "wide", 0, 1],
+      ["empty", "wide", 0, 0],
+    ]);
+    expect(boards[0]).toMatchObject({ name: "Acme", ats: "greenhouse", source: "t" });
+  });
+
+  it("keeps one board per company, preferring the one with passing jobs", () => {
+    const { boards } = classifyProbes([
+      { candidate: { ats: "lever", token: "acme", name: "Acme", source: "t" }, result: { ok: true, value: [] } },
+      { candidate: { ats: "ashby", token: "acme", name: "Acme", source: "t" }, result: { ok: true, value: [job("Senior Backend Engineer")] } },
+    ]);
+    expect(boards.map((b) => `${b.ats}:${b.tier}`)).toEqual(["ashby:fast"]);
+  });
+
+  it("adds every live board when there is no target (Infinity), fast first", () => {
+    const { boards } = classifyProbes([
+      probe("w1", { ok: true, value: [] }),
+      probe("f1", { ok: true, value: [job("Senior Backend Engineer")] }),
+      probe("w2", { ok: true, value: [job("Recruiter")] }),
+    ]);
+    expect(slotsToFill(9000, Infinity)).toBe(Infinity);
+    expect(selectToInsert(boards, 9000, Infinity).map((b) => `${b.token}:${b.tier}`)).toEqual(["f1:fast", "w2:wide", "w1:wide"]);
+    expect(selectToInsert(boards, 9000, 9001).map((b) => b.token)).toEqual(["f1"]);
+    expect(envNumber(undefined, Infinity)).toBe(Infinity);
+    expect(envNumber("", Infinity)).toBe(Infinity);
+    expect(envNumber("1500", Infinity)).toBe(1500);
+  });
+});
+
+describe("demotion", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = Date.UTC(2026, 9, 12, 6, 0, 0);
+  const co = (o: Partial<DemotionCandidate> = {}): DemotionCandidate => ({
+    id: 1,
+    state: "active",
+    tier: "fast",
+    lastMatchAt: null,
+    createdAt: NOW - 60 * DAY,
+    ...o,
+  });
+
+  it("demotes an old fast company that never matched or whose last match is over 30 days old", () => {
+    expect(DEMOTE_AFTER_MS).toBe(30 * DAY);
+    expect(shouldDemote(co(), NOW)).toBe(true);
+    expect(shouldDemote(co({ lastMatchAt: NOW - 31 * DAY }), NOW)).toBe(true);
+  });
+
+  it("keeps a company that matched within 30 days", () => {
+    expect(shouldDemote(co({ lastMatchAt: NOW - 29 * DAY }), NOW)).toBe(false);
+    expect(shouldDemote(co({ lastMatchAt: NOW - 30 * DAY }), NOW)).toBe(false);
+    expect(shouldDemote(co({ lastMatchAt: NOW - 1000 }), NOW)).toBe(false);
+  });
+
+  it("keeps a company added within 30 days, even with no match yet", () => {
+    expect(shouldDemote(co({ createdAt: NOW - 10 * DAY }), NOW)).toBe(false);
+    expect(shouldDemote(co({ createdAt: NOW - 30 * DAY }), NOW)).toBe(false);
+    expect(shouldDemote(co({ createdAt: NOW - 31 * DAY }), NOW)).toBe(true);
+  });
+
+  it("only touches active fast companies", () => {
+    expect(shouldDemote(co({ tier: "wide" }), NOW)).toBe(false);
+    expect(shouldDemote(co({ state: "inactive" }), NOW)).toBe(false);
+    expect(shouldDemote(co({ state: "pending_validation" }), NOW)).toBe(false);
+  });
+
+  it("selectDemotions returns the ids to move to wide", () => {
+    expect(
+      selectDemotions(
+        [
+          co({ id: 1 }),
+          co({ id: 2, lastMatchAt: NOW - 2 * DAY }),
+          co({ id: 3, createdAt: NOW - 3 * DAY }),
+          co({ id: 4, lastMatchAt: NOW - 45 * DAY }),
+          co({ id: 5, tier: "wide" }),
+        ],
+        NOW,
+      ),
+    ).toEqual([1, 4]);
   });
 });
 

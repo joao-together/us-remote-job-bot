@@ -14,7 +14,9 @@ const maxAgeDays = Number(process.env.BACKFILL_MAX_AGE_DAYS ?? "") || null;
 const minPostedAt = maxAgeDays ? Date.now() - maxAgeDays * 24 * 60 * 60 * 1000 : null;
 const settings = await store.getSettings();
 const excluded = prepareExcludedWords(settings.excludedWords);
-const companies = (await store.listCompaniesForPoll()).filter((c) => c.state === "active");
+// Fast tier only: wide boards had no matching role when added (or for 30 days), and checking all
+// ~9,000 boards would not fit the workflow timeout.
+const companies = (await store.listCompaniesForPoll()).filter((c) => c.state === "active" && c.tier === "fast");
 const haveRow = await store.matchedJobKeys();
 const found: { c: CompanyRow; j: NormalizedJob; loc: LocationResult }[] = [];
 let failed = 0;

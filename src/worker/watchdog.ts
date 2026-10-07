@@ -34,8 +34,9 @@ export function evaluateHealth({ settings, counts, now }: HealthInput): { warnin
       `⚠️ No successful job check ${since}. Check the GitHub Actions 'Poll job boards' workflow (disabled? out of minutes? bad secret?).`,
     );
   }
-  if (counts.active > 0 && counts.failing / counts.active > WATCHDOG_FAILING_SHARE) {
-    warnings.push(`⚠️ ${counts.failing} of ${counts.active} companies are failing. Send /companies to see which.`);
+  // Share of the fast tier only: wide boards are many small, rarely matching boards and flakier.
+  if (counts.fast > 0 && counts.failing / counts.fast > WATCHDOG_FAILING_SHARE) {
+    warnings.push(`⚠️ ${counts.failing} of ${counts.fast} fast-checked companies are failing. Send /status to see which.`);
   }
   return { warnings };
 }
@@ -73,8 +74,8 @@ export function formatStatus({ settings, counts, failing, now }: StatusInput): s
     `Last check: ${formatAgo(settings.lastPollStartAt, now)}`,
     `Last successful check: ${formatAgo(settings.lastSuccessfulPollAt, now)}`,
     "",
-    `Companies active: ${counts.active}`,
-    `Companies failing: ${counts.failing}`,
+    `Companies: ${counts.fast} fast (every 10 min), ${counts.wide} wide (hourly)`,
+    `Fast companies failing: ${counts.failing}`,
   ];
   if (failing.length > 0) {
     const names = failing.slice(0, MAX_FAILING_LISTED).map((c) => escapeHtml(c.name));
