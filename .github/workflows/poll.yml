@@ -3,7 +3,7 @@ name: Poll job boards
 on:
   schedule:
     # Every 10 minutes, offset from :00 where GitHub delays or drops runs.
-    - cron: "3-59/10 * * * *"
+    - cron: "3,13,23,33,43,53 * * * *"
   workflow_dispatch:
 
 concurrency:
