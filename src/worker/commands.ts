@@ -191,7 +191,7 @@ const OWNER_HELP = [
 const MEMBER_HELP = [
   "<b>US remote job alerts</b>",
   "",
-  "New senior US-remote software roles arrive here. Tap ✅ Applied or ❌ Skip on an alert to track it.",
+  "New US-remote engineering roles (mid-level and up) arrive here. Tap ✅ Applied or ❌ Skip on an alert to track it.",
   "",
   "/status — health and counts",
   "/applied — jobs you marked applied",
@@ -201,7 +201,7 @@ const MEMBER_HELP = [
 const OWNER_ONLY = new Set(["add", "remove", "companies", "exclude", "pause", "resume", "invite", "revoke", "users"]);
 
 export const WELCOME_TEXT =
-  "You've been given access to the job alerts bot. New senior US-remote software roles will arrive here.";
+  "You've been given access to the job alerts bot. New US-remote engineering roles (mid-level and up) will arrive here.";
 
 type Reply = (html: string) => Promise<void>;
 

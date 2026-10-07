@@ -1,6 +1,6 @@
 # US Remote Job Bot
 
-A private Telegram bot that checks the public job boards of ~280 remote-friendly companies every 10 minutes and sends you each new **senior, US-remote software engineering** role, with a direct apply link and ✅ Applied / ❌ Skip buttons.
+A private Telegram bot that checks the public job boards of ~280 remote-friendly companies (expandable to ~1,000) every 10 minutes and sends you each new **US-remote software engineering** role (mid-level and up, including DevOps/SRE, platform, data and ML engineering), with a direct apply link and ✅ Applied / ❌ Skip buttons.
 
 It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sources paid job aggregators scrape) and runs entirely on free tiers:
 
@@ -93,7 +93,15 @@ Send `/status` to the bot — it should reply.
 
 Each alert shows the title, company, location, salary (when the board lists it), how long ago it was posted, and the apply link (tap to open, long-press to copy). A ⚠️ under the location means the posting doesn't clearly say US (e.g. just "Remote") or is limited to some states — check before applying.
 
-**What counts as a match:** remote, US-eligible (or flagged ambiguous), software engineering titles (backend, frontend, full stack, mobile, …) at Senior / Sr. / Lead level. Staff, Principal, junior and management roles are excluded.
+**What counts as a match:** remote, US-eligible (or flagged ambiguous) engineering roles at any level except junior/entry.
+
+- **Roles:** software engineering (backend, frontend, full stack, mobile, product, language-named titles) plus adjacent engineering: DevOps, SRE / Site Reliability, Platform, Infrastructure, Cloud, Systems (only with a software context, e.g. "Software Systems Engineer", "Distributed Systems Engineer"), Data / Analytics Engineer, ML / AI / MLOps / Applied ML Engineer, Security Engineer (application, cloud, product), Developer Productivity, Build / Release Engineer.
+- **Levels:** Senior / Sr. / Snr, Staff, Senior Staff, Principal, Distinguished, Lead / Tech Lead, mid-level markers (II, III, IV, 2, 3, L3, Mid) and unleveled titles ("Software Engineer", "Backend Engineer").
+- **Excluded:** Junior / Jr., Intern / Internship, Entry-level, Graduate / New Grad / Early Career, Apprentice, Trainee, first-level markers ("Engineer I", "SDE 1", "Level 1", "L1"), Associate as a level; management (manager, director, head of, VP); sales / solutions engineers; support, customer, field, implementation and professional-services engineers; QA / test / SDET; hardware, electrical, mechanical, firmware, embedded, RF and manufacturing; data / business analysts; data and research scientists (unless the title also says engineer, e.g. "ML Engineer"); designers, PMs, recruiters; network engineers without a software context; IT support / help desk.
+
+### Growing the company list
+
+*Actions → Expand company list → Run workflow* (inputs: `target_total`, default 1000; `dry_run`). It probes boards from public lists (remoteintech/remote-jobs and the Feashliaa/job-board-aggregator Greenhouse/Lever/Ashby token lists), keeps boards with at least one open job that passes the rules above, and adds the best ones (most passing jobs first) until `target_total` companies are active. It stops probing after 25 minutes and uses what it found; run it again to fill any remaining slots. New companies are baselined silently by the poller, 60 per run (~2 hours for 700). Run with `dry_run` first to see the summary without writing anything.
 
 ### Inviting people
 
@@ -130,4 +138,5 @@ npm test            # Vitest in the Workers runtime (no network)
 npm run typecheck
 npm run poll        # run the poller locally (needs the five env vars above)
 npm run seed:build  # rebuild seed/companies.{json,sql} from public lists
+npm run expand      # add companies up to EXPAND_TARGET_TOTAL (default 1000); --dry-run to preview
 ```

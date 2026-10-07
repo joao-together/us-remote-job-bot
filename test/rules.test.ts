@@ -4,6 +4,7 @@ import { MAX_EXCLUDED_WORD_LENGTH } from "../src/core/config";
 import {
   classifyLocation,
   findExcludedWord,
+  isEligibleLevel,
   isSeniorTitle,
   isSoftwareEngineeringRole,
   locationPasses,
@@ -36,17 +37,21 @@ describe("plan scenarios", () => {
     expect(matchesTarget(job("Senior Backend Engineer", "Remote – EMEA")).pass).toBe(false);
   });
 
-  it("Covers AE3. Staff is rejected, Sr. Frontend is accepted", () => {
-    expect(matchesTarget(job("Staff Software Engineer, Remote US", "Remote US")).pass).toBe(false);
+  it("Covers AE3 (widened). Staff and Sr. Frontend are both accepted", () => {
+    expect(matchesTarget(job("Staff Software Engineer, Remote US", "Remote US")).pass).toBe(true);
     expect(matchesTarget(job("Sr. Frontend Engineer", "Remote US"))).toEqual({
       pass: true,
       location: { cls: "us" },
     });
   });
 
-  it("rejects Senior Staff and Senior Principal", () => {
-    expect(isSeniorTitle("Senior Staff Software Engineer")).toBe(false);
-    expect(isSeniorTitle("Senior Principal Engineer")).toBe(false);
+  it("accepts Senior Staff and Senior Principal", () => {
+    expect(isEligibleLevel("Senior Staff Software Engineer")).toBe(true);
+    expect(isEligibleLevel("Senior Principal Engineer")).toBe(true);
+  });
+
+  it("keeps isSeniorTitle as an alias of isEligibleLevel", () => {
+    expect(isSeniorTitle).toBe(isEligibleLevel);
   });
 
   it("Covers AE4. 'clearance' excludes a description requiring security clearance", () => {
@@ -88,67 +93,139 @@ describe("plan scenarios", () => {
   });
 });
 
-describe("isSoftwareEngineeringRole + isSeniorTitle", () => {
-  const titles: [string, boolean][] = [
-    ["Senior Software Engineer", true],
-    ["Sr. Software Engineer", true],
-    ["Sr Backend Engineer", true],
-    ["Senior Back-End Developer", true],
-    ["Senior Full-Stack Engineer (AI)", true],
-    ["Senior Fullstack Developer", true],
-    ["Senior Front End Engineer, Design Systems", true],
-    ["Senior Android Engineer", true],
-    ["Senior Mobile Engineer (React Native)", true],
-    ["Lead iOS Developer", true],
-    ["Senior Platform Engineer", true],
-    ["Senior Product Engineer", true],
-    ["Senior Software Engineer II", true],
-    ["Senior Python Engineer", true],
-    ["Senior Web Developer", true],
-    ["Backend Team Lead", true],
-    ["Senior Backend Engineer, Machine Learning Platform", true],
-    ["Software Engineer", false],
-    ["Software Engineer III", false],
-    ["Mid-Level Frontend Engineer", false],
-    ["Lead Software Engineer II", false],
-    ["Junior Frontend Developer", false],
-    ["Senior Software Engineer (New Grad)", false],
-    ["Software Engineering Intern", false],
-    ["Staff Backend Engineer", false],
-    ["Principal Software Engineer", false],
-    ["Senior Machine Learning Engineer", false],
-    ["Senior Software Engineer, Machine Learning", false],
-    ["Senior Data Engineer", false],
-    ["Senior DevOps Engineer", false],
-    ["Senior Site Reliability Engineer", false],
-    ["Senior Security Engineer", false],
-    ["Senior Software Engineer in Test", false],
-    ["Senior QA Engineer", false],
-    ["Senior Solutions Engineer", false],
-    ["Senior Customer Engineer", false],
-    ["Senior Infrastructure Engineer", false],
-    ["Senior Hardware Engineer", false],
-    ["Director of Engineering", false],
-    ["Head of Engineering", false],
-    ["Senior Engineer", false],
-    ["Team Lead", false],
-    ["Senior Product Manager", false],
+describe("isSoftwareEngineeringRole + isEligibleLevel", () => {
+  // [title, expected, category]
+  const titles: [string, boolean, string][] = [
+    // Levels: everything except junior/entry.
+    ["Senior Software Engineer", true, "senior"],
+    ["Sr. Software Engineer", true, "senior"],
+    ["Snr Backend Engineer", true, "senior"],
+    ["Staff Software Engineer", true, "staff"],
+    ["Senior Staff Software Engineer", true, "senior staff"],
+    ["Principal Software Engineer", true, "principal"],
+    ["Distinguished Engineer, Platform", true, "distinguished"],
+    ["Lead iOS Developer", true, "lead"],
+    ["Tech Lead, Payments", true, "tech lead"],
+    ["Backend Team Lead", true, "team lead"],
+    ["Software Engineer II", true, "mid II"],
+    ["Software Engineer III", true, "mid III"],
+    ["Software Engineer IV, Backend", true, "mid IV"],
+    ["Software Engineer 2", true, "mid 2"],
+    ["Software Engineer (L3)", true, "mid L3"],
+    ["Mid-Level Frontend Engineer", true, "mid"],
+    ["Lead Software Engineer II", true, "lead + level"],
+    ["Software Engineer I/II", true, "range incl. mid"],
+    ["Senior Software Engineer I", true, "senior sub-level"],
+    ["Software Engineer", true, "unleveled"],
+    ["Backend Engineer", true, "unleveled"],
+    ["Senior Developer", true, "developer alone"],
+    ["Junior Frontend Developer", false, "junior"],
+    ["Jr. Software Engineer", false, "jr"],
+    ["Software Engineering Intern", false, "intern"],
+    ["Software Engineer Internship (Summer 2027)", false, "internship"],
+    ["Entry-Level Software Engineer", false, "entry level"],
+    ["Software Engineer, New Grad", false, "new grad"],
+    ["Senior Software Engineer (New Grad)", false, "new grad beats senior"],
+    ["Graduate Software Engineer", false, "graduate"],
+    ["Early Career Software Engineer", false, "early career"],
+    ["Software Engineer Apprentice", false, "apprentice"],
+    ["Trainee Software Developer", false, "trainee"],
+    ["Software Engineer I", false, "level I"],
+    ["Software Engineer 1, Backend", false, "level 1"],
+    ["SDE I", false, "SDE I"],
+    ["Software Engineer - Level 1", false, "level 1"],
+    ["Software Engineer (L1)", false, "L1"],
+    ["Associate Software Engineer", false, "associate"],
+    // Software and adjacent roles.
+    ["Senior Back-End Developer", true, "backend"],
+    ["Senior Full-Stack Engineer (AI)", true, "full stack"],
+    ["Senior Front End Engineer, Design Systems", true, "frontend"],
+    ["Senior Mobile Engineer (React Native)", true, "mobile"],
+    ["Senior Python Engineer", true, "language"],
+    ["Senior Product Engineer", true, "product"],
+    ["Senior DevOps Engineer", true, "devops"],
+    ["Senior Site Reliability Engineer", true, "sre"],
+    ["Staff SRE", true, "sre"],
+    ["Senior Platform Engineer", true, "platform"],
+    ["Senior Infrastructure Engineer", true, "infrastructure"],
+    ["Cloud Engineer", true, "cloud"],
+    ["Senior Software Systems Engineer", true, "systems (software)"],
+    ["Distributed Systems Engineer", true, "systems (software)"],
+    ["Senior Data Engineer", true, "data"],
+    ["Analytics Engineer", true, "analytics"],
+    ["Senior Machine Learning Engineer", true, "ml"],
+    ["ML Engineer II", true, "ml"],
+    ["AI Engineer", true, "ai"],
+    ["Senior MLOps Engineer", true, "mlops"],
+    ["Applied ML Engineer", true, "applied ml"],
+    ["Data Scientist / Machine Learning Engineer", true, "scientist + engineer"],
+    ["Senior Security Engineer", true, "security"],
+    ["Application Security Engineer", true, "appsec"],
+    ["Cloud Security Engineer", true, "cloud security"],
+    ["Developer Productivity Engineer", true, "dev productivity"],
+    ["Senior Build Engineer", true, "build"],
+    ["Release Engineer", true, "release"],
+    ["Senior Software Engineer, Machine Learning", true, "ml"],
+    // Still rejected.
+    ["Senior Engineering Manager", false, "manager"],
+    ["Director of Engineering", false, "director"],
+    ["Head of Engineering", false, "head of"],
+    ["VP of Engineering", false, "vp"],
+    ["Senior Sales Engineer", false, "sales"],
+    ["Senior Solutions Engineer", false, "solutions"],
+    ["Senior Customer Engineer", false, "customer"],
+    ["Technical Support Engineer", false, "support"],
+    ["Field Engineer", false, "field"],
+    ["Implementation Engineer", false, "implementation"],
+    ["Professional Services Engineer", false, "professional services"],
+    ["Senior QA Engineer", false, "qa"],
+    ["Senior Software Engineer in Test", false, "in test"],
+    ["SDET II", false, "sdet"],
+    ["Test Automation Engineer", false, "test"],
+    ["Senior Hardware Engineer", false, "hardware"],
+    ["Electrical Engineer", false, "electrical"],
+    ["Mechanical Engineer", false, "mechanical"],
+    ["Firmware Engineer", false, "firmware"],
+    ["Embedded Software Engineer", false, "embedded"],
+    ["RF Engineer", false, "rf"],
+    ["Manufacturing Engineer", false, "manufacturing"],
+    ["Senior Data Analyst", false, "analyst"],
+    ["Business Analyst", false, "analyst"],
+    ["Senior Data Scientist", false, "scientist"],
+    ["Research Scientist, LLMs", false, "scientist"],
+    ["Senior Product Designer", false, "designer"],
+    ["Senior Product Manager", false, "pm"],
+    ["Technical Recruiter", false, "recruiter"],
+    ["Senior Network Engineer", false, "network"],
+    ["Network Infrastructure Engineer", false, "network"],
+    ["Senior Systems Engineer", false, "systems (no software)"],
+    ["IT Support Engineer", false, "it support"],
+    ["Help Desk Engineer", false, "help desk"],
+    ["Senior Engineer", false, "no area"],
+    ["Team Lead", false, "no area"],
   ];
 
-  it.each(titles)("%s -> %s", (title, expected) => {
-    expect(isSoftwareEngineeringRole(title) && isSeniorTitle(title)).toBe(expected);
+  it.each(titles)("%s -> %s (%s)", (title, expected) => {
+    expect(isSoftwareEngineeringRole(title) && isEligibleLevel(title)).toBe(expected);
   });
 
-  it("'Team Lead' counts as Lead for seniority", () => {
-    expect(isSeniorTitle("Team Lead")).toBe(true);
+  it("covers at least 40 titles", () => {
+    expect(titles.length).toBeGreaterThanOrEqual(40);
+  });
+
+  it("separates the role and level checks", () => {
+    expect(isEligibleLevel("Team Lead")).toBe(true);
     expect(isSoftwareEngineeringRole("Team Lead")).toBe(false);
+    expect(isSoftwareEngineeringRole("Junior Software Engineer")).toBe(true);
+    expect(isEligibleLevel("Junior Software Engineer")).toBe(false);
+    expect(isSoftwareEngineeringRole("Senior Engineering Manager")).toBe(false);
+    expect(isEligibleLevel("Senior Engineering Manager")).toBe(true);
   });
 
-  it("separates the role and seniority checks", () => {
-    expect(isSoftwareEngineeringRole("Software Engineer")).toBe(true);
-    expect(isSeniorTitle("Software Engineer")).toBe(false);
-    expect(isSoftwareEngineeringRole("Staff Software Engineer")).toBe(true);
-    expect(isSeniorTitle("Staff Software Engineer")).toBe(false);
+  it("reads I and 1 as a level only right after a role noun or 'Level'", () => {
+    expect(isEligibleLevel("Backend Engineer, Team 1")).toBe(true);
+    expect(isEligibleLevel("Engineer 1")).toBe(false);
+    expect(isEligibleLevel("Level 1 Developer")).toBe(false);
   });
 });
 
@@ -263,14 +340,14 @@ describe("normalizeTitle", () => {
 });
 
 describe("matchesTarget", () => {
-  it("explains role, seniority and location rejections", () => {
-    expect(matchesTarget(job("Senior Data Engineer", "Remote - US"))).toEqual({
+  it("explains role, level and location rejections", () => {
+    expect(matchesTarget(job("Senior Data Analyst", "Remote - US"))).toEqual({
       pass: false,
-      reason: "Not a software engineering role",
+      reason: "Not a target engineering role",
     });
-    expect(matchesTarget(job("Software Engineer", "Remote - US"))).toEqual({
+    expect(matchesTarget(job("Junior Software Engineer", "Remote - US"))).toEqual({
       pass: false,
-      reason: "Not a senior title",
+      reason: "Junior or entry-level title",
     });
     const onsite = matchesTarget(job("Senior Software Engineer", "Austin, TX", "no"));
     expect(onsite.pass).toBe(false);

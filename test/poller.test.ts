@@ -82,7 +82,7 @@ describe("detection and delivery", () => {
 
     boards.lever.acme.push(
       leverPosting("new", "Senior Backend Engineer"),
-      leverPosting("staff", "Staff Software Engineer"),
+      leverPosting("junior", "Junior Software Engineer"),
       leverPosting("emea", SENIOR + " II", { location: "Remote - EMEA", country: "DE" }),
     );
     const stats = await poll();
@@ -97,9 +97,9 @@ describe("detection and delivery", () => {
       telegram_message_id: 500,
       location_class: "us",
     });
-    expect(await jobStatus("staff")).toBeUndefined();
+    expect(await jobStatus("junior")).toBeUndefined();
     expect(await jobStatus("emea")).toBeUndefined();
-    expect((await seenIds(await companyIdByToken("acme"))).sort()).toEqual(["emea", "old", "staff"]);
+    expect((await seenIds(await companyIdByToken("acme"))).sort()).toEqual(["emea", "junior", "old"]);
     expect(stats).toMatchObject({ newJobs: 3, matched: 1, sent: 1, sendFailures: 0 });
 
     const settings = await t.store.getSettings();

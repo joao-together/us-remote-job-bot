@@ -1,0 +1,45 @@
+name: Expand company list
+
+# Manual: probes public board lists and adds companies with open US-remote engineering roles
+# until target_total active companies are watched. New companies are baselined silently by the
+# poller (60 per run). Shares the poller's concurrency group so the two never overlap.
+on:
+  workflow_dispatch:
+    inputs:
+      target_total:
+        description: Total active companies to reach
+        type: number
+        default: 1000
+      dry_run:
+        description: Only report what would be added
+        type: boolean
+        default: false
+
+concurrency:
+  group: poll
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  expand:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run expand -- ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+          CF_D1_API_TOKEN: ${{ secrets.CF_D1_API_TOKEN }}
+          # Raises the GitHub API rate limit for listing the source repos.
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPAND_TARGET_TOTAL: ${{ inputs.target_total }}
+          EXPAND_DRY_RUN: ${{ inputs.dry_run }}
+          EXPAND_TIME_BUDGET_MIN: 25

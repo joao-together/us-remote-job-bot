@@ -45,42 +45,61 @@ function hasAny(tokens: string[], list: Phrases): boolean {
 // ---------- Role ----------
 
 const ROLE_NOUNS = phrases([
-  "engineer", "engineers", "developer", "developers", "swe", "sde", "programmer",
+  "engineer", "engineers", "developer", "developers", "swe", "sde", "programmer", "sre",
   "tech lead", "technical lead", "team lead", "engineering lead",
 ]);
-const SELF_EXPLANATORY_NOUNS = phrases(["developer", "developers", "swe", "sde", "programmer"]);
+/** Nouns that name a software role without any further context ("Senior Developer", "Senior SRE", "Tech Lead"). */
+const SELF_EXPLANATORY_NOUNS = phrases(["developer", "developers", "swe", "sde", "programmer", "sre", "tech lead"]);
 
 const ROLE_HARD_REJECTS = phrases([
-  "sales", "presales", "pre sales", "solutions", "support", "customer engineer", "customer success",
-  "customer support", "customer facing", "field engineer", "field application", "field applications",
+  // Sales, customer-facing and services engineering.
+  "sales", "presales", "pre sales", "solutions", "solution", "support", "customer engineer", "customer success",
+  "customer support", "customer facing", "customer reliability", "customer experience", "field engineer",
+  "field engineering", "field application", "field applications", "field service", "implementation",
+  "professional services", "developer relations", "advocate", "evangelist",
+  "consultant",
+  // Management and recruiting.
   "manager", "management", "director", "head of", "vp", "vice president", "chief", "cto",
-  "recruiter", "recruiting", "in test", "sdet", "qa", "quality assurance", "test automation",
-  "developer relations", "advocate", "evangelist", "consultant", "implementation",
-  "electrical", "mechanical", "civil", "chemical", "manufacturing", "structural",
+  "recruiter", "recruiting",
+  // QA and test.
+  "in test", "sdet", "qa", "qe", "quality", "quality assurance", "test", "tester", "testing", "test automation",
+  // Hardware and physical engineering.
+  "hardware", "electrical", "mechanical", "firmware", "embedded", "rf", "manufacturing", "asic", "fpga",
+  "silicon", "pcb", "analog", "optical", "photonics", "mechatronics", "avionics", "civil", "chemical",
+  "structural", "data center", "datacenter", "facilities",
+  // IT support and non-engineering security work.
+  "it", "help desk", "helpdesk", "service desk", "physical security",
 ]);
 
-/** Product-software areas that win over a specialization ("Full Stack Engineer (AI)"). */
-const STRONG_CONTEXT = phrases([
-  "backend", "back end", "frontend", "front end", "full stack", "fullstack", "mobile", "ios", "android",
-  "web", "product engineer", "product engineers",
-]);
-
-/** Software hints that count only when no specialization is named. */
-const WEAK_CONTEXT = phrases([
-  "software", "platform", "application", "applications", "product", "ui", "api", "saas",
+/** Product-software areas and adjacent engineering disciplines that count as a target role. */
+const ROLE_CONTEXT = phrases([
+  // Product software.
+  "software", "backend", "back end", "frontend", "front end", "full stack", "fullstack", "mobile", "ios",
+  "android", "web", "product", "application", "applications", "ui", "api", "apis", "saas",
   "java", "python", "ruby", "rails", "go", "golang", "javascript", "typescript", "js", "node", "react",
   "angular", "vue", "php", "net", "dotnet", "c#", "c++", "scala", "kotlin", "swift", "rust", "elixir",
-  "django", "flutter",
+  "django", "flutter", "distributed systems",
+  // DevOps, SRE, platform and infrastructure.
+  "devops", "dev ops", "devsecops", "sre", "site reliability", "reliability", "platform", "infrastructure",
+  "infra", "cloud", "kubernetes", "observability", "production",
+  // Data and ML/AI.
+  "data", "analytics", "etl", "database", "ml", "machine learning", "mlops", "ml ops", "ai",
+  "artificial intelligence", "llm", "genai", "deep learning", "computer vision", "nlp", "applied",
+  "business intelligence",
+  // Security.
+  "security", "appsec", "application security", "cloud security", "product security",
+  // Developer productivity, build and release.
+  "developer productivity", "dev productivity", "developer experience", "devex", "productivity", "tooling",
+  "build", "release", "ci",
 ]);
 
-const SPECIALIZATIONS = phrases([
-  "data", "analytics", "etl", "database", "ml", "machine learning", "ai", "artificial intelligence", "llm",
-  "mlops", "computer vision", "nlp", "devops", "dev ops", "sre", "site reliability", "reliability",
-  "security", "appsec", "test", "testing", "quality", "hardware", "network", "networking", "infrastructure",
-  "infra", "embedded", "firmware",
-]);
-
-const SENIOR_MARKERS = phrases(["senior", "sr", "snr"]);
+/**
+ * Words that alone don't make a software role: "Systems Engineer" and "Network Engineer" are often
+ * IT or hardware jobs. They pass only with other role context ("Software Systems Engineer").
+ */
+const NEEDS_SOFTWARE_CONTEXT = phrases(["systems", "system", "network", "networking"]);
+/** For NEEDS_SOFTWARE_CONTEXT titles, infra and security words don't count ("Network Infrastructure Engineer"). */
+const INFRA_ONLY_CONTEXT = new Set(["infrastructure", "infra", "cloud", "reliability", "production", "security"]);
 
 export function isSoftwareEngineeringRole(title: string): boolean {
   return isSoftwareEngineeringTokens(tokenize(title));
@@ -89,27 +108,54 @@ export function isSoftwareEngineeringRole(title: string): boolean {
 function isSoftwareEngineeringTokens(t: string[]): boolean {
   if (!hasAny(t, ROLE_NOUNS)) return false;
   if (hasAny(t, ROLE_HARD_REJECTS)) return false;
-  if (hasAny(t, STRONG_CONTEXT)) return true;
-  if (hasAny(t, SPECIALIZATIONS)) return false;
-  return hasAny(t, WEAK_CONTEXT) || hasAny(t, SELF_EXPLANATORY_NOUNS);
+  const context = ROLE_CONTEXT.filter((p) => indexOfPhrase(t, p) >= 0);
+  if (hasAny(t, NEEDS_SOFTWARE_CONTEXT)) {
+    // "distributed systems" names the area itself; otherwise need context beyond infrastructure words.
+    return context.some((p) => !INFRA_ONLY_CONTEXT.has(p.join(" ")));
+  }
+  return context.length > 0 || hasAny(t, SELF_EXPLANATORY_NOUNS);
 }
 
 // ---------- Seniority ----------
 
-const SENIORITY_REJECTS = phrases([
-  "staff", "principal", "junior", "jr", "intern", "interns", "internship", "graduate", "grad",
-  "new grad", "apprentice", "apprenticeship", "trainee", "entry", "early career",
+/** Junior, student and entry-level markers: always rejected, even next to "Senior". */
+const ENTRY_LEVEL_REJECTS = phrases([
+  "junior", "jr", "intern", "interns", "internship", "graduate", "grad", "new grad", "apprentice",
+  "apprenticeship", "trainee", "entry", "entry level", "early career", "student", "campus", "university",
+  "co op", "coop",
 ]);
-const LEVEL_MARKERS = phrases(["mid", "i", "ii", "iii", "iv", "1", "2", "3", "4"]);
+/** Senior-or-above markers; they win over a sub-level ("Senior Software Engineer I") or "Associate". */
+const SENIOR_PLUS_MARKERS = phrases([
+  "senior", "sr", "snr", "staff", "principal", "distinguished", "lead", "architect",
+]);
+/** Second-level-or-above markers; their presence means a range like "Engineer I/II" isn't entry-only. */
+const HIGHER_LEVEL_MARKERS = phrases(["mid", "ii", "iii", "iv", "v", "2", "3", "4", "5", "l2", "l3", "l4", "l5"]);
+/** Tokens that a level number can follow: "Software Engineer I", "SDE 1", "Level 1". */
+const LEVEL_HOSTS = new Set(["engineer", "engineers", "developer", "developers", "swe", "sde", "programmer", "level", "lvl", "grade", "tier"]);
 
-export function isSeniorTitle(title: string): boolean {
-  return isSeniorTokens(tokenize(title));
+function hasFirstLevelMarker(t: string[]): boolean {
+  if (t.includes("l1")) return true;
+  return t.some((tok, i) => (tok === "i" || tok === "1") && i > 0 && LEVEL_HOSTS.has(t[i - 1]!));
 }
 
-function isSeniorTokens(t: string[]): boolean {
-  if (hasAny(t, SENIORITY_REJECTS)) return false;
-  if (hasAny(t, SENIOR_MARKERS)) return true;
-  return t.includes("lead") && !hasAny(t, LEVEL_MARKERS);
+/**
+ * Whether a title's level is eligible: everything except junior/entry. Accepts Senior, Staff,
+ * Principal, Distinguished, Lead, mid-level (II, III, 2, Mid) and unleveled titles; rejects
+ * Junior, Intern, Entry-level, Graduate/New Grad, Apprentice, Trainee, first-level markers
+ * ("Engineer I", "SDE 1", "Level 1", "L1") and Associate as a level.
+ */
+export function isEligibleLevel(title: string): boolean {
+  return isEligibleLevelTokens(tokenize(title));
+}
+
+/** @deprecated Old name from when only Senior/Lead titles passed; use isEligibleLevel. */
+export const isSeniorTitle = isEligibleLevel;
+
+function isEligibleLevelTokens(t: string[]): boolean {
+  if (hasAny(t, ENTRY_LEVEL_REJECTS)) return false;
+  if (hasAny(t, SENIOR_PLUS_MARKERS)) return true;
+  if (t.includes("associate")) return false;
+  return !hasFirstLevelMarker(t) || hasAny(t, HIGHER_LEVEL_MARKERS);
 }
 
 // ---------- Location ----------
@@ -307,8 +353,8 @@ export function normalizeTitle(title: string): string {
 
 export function matchesTarget(job: MatchInput): MatchResult {
   const title = tokenize(job.title);
-  if (!isSoftwareEngineeringTokens(title)) return { pass: false, reason: "Not a software engineering role" };
-  if (!isSeniorTokens(title)) return { pass: false, reason: "Not a senior title" };
+  if (!isSoftwareEngineeringTokens(title)) return { pass: false, reason: "Not a target engineering role" };
+  if (!isEligibleLevelTokens(title)) return { pass: false, reason: "Junior or entry-level title" };
   const location = classifyLocation(job);
   if (!locationPasses(location.cls)) {
     return { pass: false, reason: location.reason ?? `Location is ${location.cls}` };

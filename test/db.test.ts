@@ -322,6 +322,22 @@ describe("users", () => {
 });
 
 describe("companies", () => {
+  it("inserts discovered companies as active and unbaselined, leaving existing boards alone", async () => {
+    const old = await store.insertCompany({ name: "Acme", ats: "lever", boardToken: "acme" });
+    await store.setCompanyState(old.company.id, "inactive");
+    await store.runBatch([
+      store.stmtInsertActiveCompany({ name: "Acme Renamed", ats: "lever", boardToken: "ACME" }),
+      store.stmtInsertActiveCompany({ name: "Beta", ats: "ashby", boardToken: "beta" }),
+      store.stmtInsertActiveCompany({ name: "Beta Again", ats: "ashby", boardToken: "beta" }),
+    ]);
+    const rows = await store.listCompanies({ includeInactive: true });
+    expect(rows.map((c) => [c.name, c.state, c.baselined, c.seenIds])).toEqual([
+      ["Acme", "inactive", false, []],
+      ["Beta", "active", false, []],
+    ]);
+    expect(rows[1]!.createdAt).toBe(T0);
+  });
+
   it("adds, reports existing, and reactivates inactive companies", async () => {
     const first = await store.insertCompany({ name: "Acme", ats: "lever", boardToken: "acme" });
     expect(first.status).toBe("added");

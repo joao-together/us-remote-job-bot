@@ -370,6 +370,19 @@ export class Store {
     return { status: "exists", company: toCompany(again[0] as Raw) };
   }
 
+  /**
+   * Inserts an already-vetted company as active and unbaselined, so the poller baselines it
+   * silently (capped per run by BASELINE_COMPANIES_PER_RUN). A board already present, in any
+   * state, is left untouched.
+   */
+  stmtInsertActiveCompany(c: Pick<NewCompany, "name" | "ats" | "boardToken">, at: number = this.now()): Statement {
+    return {
+      sql: `INSERT INTO companies (name, ats, board_token, state, baselined, consecutive_failures, created_at)
+        VALUES (?, ?, ?, 'active', 0, 0, ?) ON CONFLICT(ats, board_token) DO NOTHING`,
+      params: [c.name, c.ats, c.boardToken, Math.trunc(at)],
+    };
+  }
+
   /** Case-insensitive match on company name or board token. */
   async findCompaniesByName(name: string): Promise<CompanyRow[]> {
     const rows = await this.driver.query<Raw>({
