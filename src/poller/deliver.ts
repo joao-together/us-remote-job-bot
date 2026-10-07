@@ -1,6 +1,6 @@
 import { adapterFor } from "../core/ats/detect";
 import type { Fetcher } from "../core/ats/types";
-import { PENDING_MAX_AGE_MS, SEND_SPACING_MS } from "../core/config";
+import { PENDING_MAX_AGE_MS, SEND_SPACING_MS, DELIVERY_TIME_BUDGET_MS } from "../core/config";
 import { findExcludedWord, type LocationClass } from "../core/match/rules";
 import type { Store } from "../core/store/db";
 import { TelegramError, type TelegramClient } from "../core/telegram/client";
@@ -62,7 +62,10 @@ export async function deliver(deps: DeliverDeps): Promise<DeliverStats> {
   /** The owner first, then active invited users; loaded once, when the first job is claimed. */
   let recipients: string[] | undefined;
 
+  const startedAt = now();
   for (const job of await store.listPending()) {
+    // Stop between jobs once the budget is spent so the run ends cleanly; the rest stay pending.
+    if (now() - startedAt >= DELIVERY_TIME_BUDGET_MS) break;
     let description = "";
     let salaryText = job.salaryText;
 

@@ -63,3 +63,10 @@ export const PENDING_MAX_AGE_MS = 48 * 60 * 60 * 1000;
  * D1 write burst over several runs. pending_validation companies (from /add) are not capped.
  */
 export const BASELINE_COMPANIES_PER_RUN = 60;
+
+/**
+ * Max time one poller run spends sending alerts. Fetching ~1,000 boards takes a few minutes and
+ * the Actions job times out at 12, so delivery stops between jobs after this and the next run
+ * (10 minutes later) continues. A job killed mid-send is never resent, so ending cleanly matters.
+ */
+export const DELIVERY_TIME_BUDGET_MS = 6 * 60 * 1000;

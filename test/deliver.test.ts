@@ -159,6 +159,30 @@ describe("deliver", () => {
     expect(t.sleeps).toEqual([1100]);
   });
 
+  it("stops cleanly when the delivery time budget is spent and finishes next run", async () => {
+    boards.lever.acme = [];
+    await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+
+    boards.lever.acme = [
+      leverPosting("b1", "Senior Software Engineer"),
+      leverPosting("b2", "Senior Backend Engineer"),
+      leverPosting("b3", "Senior Mobile Engineer"),
+    ];
+    // Each spacing sleep advances the clock past the 6-minute budget after the second send.
+    t.deps.sleep = async () => {
+      t.clock.now += 7 * 60 * 1000;
+    };
+    const stats = await poll();
+    expect(stats.sent).toBe(2);
+    const statuses = await Promise.all(["b1", "b2", "b3"].map(jobStatus));
+    expect(statuses).toEqual(["sent", "sent", "pending"]);
+
+    const next = await poll();
+    expect(next.sent).toBe(1);
+    expect(await jobStatus("b3")).toBe("sent");
+  });
+
   it("does nothing when called with no pending jobs", async () => {
     const stats = await deliver({ ...t.deps, excludedWords: [] });
     expect(stats).toEqual({ sent: 0, messagesSent: 0, excluded: 0, detailFailures: 0, gone: 0, sendFailures: 0 });
