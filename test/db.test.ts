@@ -70,6 +70,16 @@ describe("jobs", () => {
     expect(known.get(empty)!.size).toBe(0);
   });
 
+  it("lists keys of jobs that went through matching, excluding legacy seen rows", async () => {
+    const a = await addCompany("A", "a");
+    await store.runBatch([
+      store.stmtInsertJob(job(a, "p", { status: "pending" })),
+      store.stmtInsertJob(job(a, "x", { status: "excluded" })),
+      store.stmtInsertJob(job(a, "s", { status: "seen" })),
+    ]);
+    expect([...(await store.matchedJobKeys())].sort()).toEqual([`${a}:p`, `${a}:x`]);
+  });
+
   it("chunks large batches", async () => {
     const c = await addCompany();
     const stmts = Array.from({ length: 120 }, (_, i) => store.stmtInsertJob(job(c, `j${i}`, { status: "seen" })));

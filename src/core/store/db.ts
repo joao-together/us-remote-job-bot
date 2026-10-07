@@ -358,6 +358,14 @@ export class Store {
 
   // ---- poll ----
 
+  /** "companyId:boardJobId" keys of jobs that already went through matching (anything but legacy 'seen'). */
+  async matchedJobKeys(): Promise<Set<string>> {
+    const rows = await this.driver.query<{ company_id: number; board_job_id: string }>({
+      sql: "SELECT company_id, board_job_id FROM jobs WHERE status <> 'seen'",
+    });
+    return new Set(rows.map((r) => `${r.company_id}:${r.board_job_id}`));
+  }
+
   /**
    * Every board job id stored as a `jobs` row (any status, including legacy 'seen' rows), per
    * company, loaded in chunks of company ids. Ids in companies.seen_ids are known too; the
