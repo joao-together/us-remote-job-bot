@@ -385,6 +385,32 @@ export class Store {
   }
 
   /** Inserts a job; an existing (company, board job id) is left untouched. */
+  /**
+   * Turns a legacy 'seen' row (stored before seen ids moved to companies.seen_ids) into a job with
+   * the given details and status. Used by the open-roles backfill, whose plain insert would no-op.
+   */
+  stmtRequeueSeenJob(job: NewJob, at: number = this.now()): Statement {
+    return {
+      sql: `UPDATE jobs SET title = ?, normalized_title = ?, location_text = ?, location_class = ?, location_reason = ?,
+          apply_url = ?, posted_at = ?, salary_text = ?, status = ?, first_seen_at = ?
+        WHERE company_id = ? AND board_job_id = ? AND status = 'seen'`,
+      params: [
+        job.title,
+        job.normalizedTitle,
+        job.locationText,
+        job.locationClass ?? null,
+        job.locationReason ?? null,
+        job.applyUrl,
+        job.postedAt ?? null,
+        job.salaryText ?? null,
+        job.status,
+        at,
+        job.companyId,
+        job.boardJobId,
+      ],
+    };
+  }
+
   stmtInsertJob(job: NewJob, at: number = this.now()): Statement {
     return {
       sql: `INSERT INTO jobs (company_id, board_job_id, title, normalized_title, location_text, location_class,

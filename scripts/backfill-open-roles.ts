@@ -35,6 +35,10 @@ console.log(`companies: ${companies.length}, fetch failures: ${failed}, matching
 for (const f of found.slice(-8)) console.log("  newest:", f.j.title, "@", f.c.name, "|", f.j.locationText);
 if (dryRun) process.exit(0);
 const now = Date.now();
-const stmts = found.map((f, i) => store.stmtInsertJob({ companyId: f.c.id, boardJobId: f.j.id, title: f.j.title, normalizedTitle: normalizeTitle(f.j.title), locationText: f.j.locationText, locationClass: f.loc.cls, locationReason: f.loc.reason ?? null, applyUrl: f.j.applyUrl, postedAt: f.j.postedAt ?? null, salaryText: f.j.salaryText ?? null, status: "pending" }, now + i));
+const stmts = found.flatMap((f, i) => {
+  const row = { companyId: f.c.id, boardJobId: f.j.id, title: f.j.title, normalizedTitle: normalizeTitle(f.j.title), locationText: f.j.locationText, locationClass: f.loc.cls, locationReason: f.loc.reason ?? null, applyUrl: f.j.applyUrl, postedAt: f.j.postedAt ?? null, salaryText: f.j.salaryText ?? null, status: "pending" as const };
+  // Insert for new ids; re-queue ids stored as legacy 'seen' rows (the insert would no-op on those).
+  return [store.stmtInsertJob(row, now + i), store.stmtRequeueSeenJob(row, now + i)];
+});
 await store.runBatch(stmts);
-console.log("queued", stmts.length);
+console.log("queued", found.length);

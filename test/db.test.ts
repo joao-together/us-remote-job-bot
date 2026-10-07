@@ -80,6 +80,22 @@ describe("jobs", () => {
     expect([...(await store.matchedJobKeys())].sort()).toEqual([`${a}:p`, `${a}:x`]);
   });
 
+  it("re-queues a legacy seen row but leaves other statuses alone", async () => {
+    const a = await addCompany("A", "a");
+    await store.runBatch([
+      store.stmtInsertJob(job(a, "old", { status: "seen", title: "Old" })),
+      store.stmtInsertJob(job(a, "sent1", { status: "pending" })),
+    ]);
+    await store.markSent((await store.listPending())[0]!.id, 7, 1);
+    await store.runBatch([
+      store.stmtRequeueSeenJob(job(a, "old", { status: "pending", title: "Senior Software Engineer", locationClass: "us" })),
+      store.stmtRequeueSeenJob(job(a, "sent1", { status: "pending" })),
+    ]);
+    const pending = await store.listPending();
+    expect(pending.map((p) => [p.boardJobId, p.title, p.locationClass])).toEqual([["old", "Senior Software Engineer", "us"]]);
+    expect([...(await store.matchedJobKeys())].sort()).toEqual([`${a}:old`, `${a}:sent1`]);
+  });
+
   it("chunks large batches", async () => {
     const c = await addCompany();
     const stmts = Array.from({ length: 120 }, (_, i) => store.stmtInsertJob(job(c, `j${i}`, { status: "seen" })));
