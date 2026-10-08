@@ -71,6 +71,10 @@ const ROLE_HARD_REJECTS = phrases([
   "structural", "data center", "datacenter", "facilities",
   // IT support and non-engineering security work.
   "it", "help desk", "helpdesk", "service desk", "physical security",
+  // Teaching/content "developers" and data-labeling operations ("Curriculum Developer", "Human Data Operations").
+  "curriculum", "course", "courseware", "instructional", "instructor", "trainer", "training developer",
+  "content developer", "subject matter", "human data", "data operations", "annotation", "annotator",
+  "labeling", "labelling",
 ]);
 
 /** Product-software areas and adjacent engineering disciplines that count as a target role. */

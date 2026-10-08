@@ -203,6 +203,16 @@ describe("isSoftwareEngineeringRole + isEligibleLevel", () => {
     ["Help Desk Engineer", false, "help desk"],
     ["Senior Engineer", false, "no area"],
     ["Team Lead", false, "no area"],
+    ["CANES SME Curriculum Developer (Job 1489)", false, "curriculum"],
+    ["CANES SME Course Developer (Job 1488)", false, "course"],
+    ["Instructional Developer", false, "instructional"],
+    ["Team Lead, Human Data Operations - Vision, Image & Video", false, "data labeling ops"],
+    ["Data Annotation Specialist Engineer", false, "annotation"],
+    // Still accepted next to the new rejects.
+    ["Senior Machine Learning Engineer", true, "ml"],
+    ["Senior Training Infrastructure Engineer", true, "ml training infra"],
+    ["Staff Data Engineer", true, "data"],
+    ["Shopify Developer", true, "developer"],
   ];
 
   it.each(titles)("%s -> %s (%s)", (title, expected) => {
