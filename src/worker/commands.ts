@@ -6,6 +6,7 @@ import type { CompanyRow, Store, UserRow } from "../core/store/db";
 import { TelegramError, type TelegramClient } from "../core/telegram/client";
 import { errorMessage, isRecord } from "../core/util";
 import { escapeHtml, jobKeyboard, parseCallbackData, truncate } from "../core/telegram/format";
+import { buildReport } from "./report";
 import { buildStatus } from "./watchdog";
 
 const MAX_MESSAGE_LENGTH = 4000;
@@ -185,6 +186,7 @@ const OWNER_HELP = [
   "/users — list invited users",
   "/status — health and counts",
   "/applied — jobs you marked applied",
+  "/report — today's applications so far (sent daily at 09:00 Brazil time for the day before)",
   "/help — this message",
 ].join("\n");
 
@@ -195,6 +197,7 @@ const MEMBER_HELP = [
   "",
   "/status — health and counts",
   "/applied — jobs you marked applied",
+  "/report — today's applications so far (sent daily at 09:00 Brazil time for the day before)",
   "/help — this message",
 ].join("\n");
 
@@ -250,6 +253,8 @@ async function handleMessage(msg: Message, role: Exclude<Role, "unknown">, deps:
       if (role === "owner") status += `\nInvited users: ${await deps.store.countActiveUsers()}`;
       return reply(status);
     }
+    case "report":
+      return reply(await buildReport(deps.store, userId, deps.ownerId, "today", deps.now()));
     case "applied":
       return appliedCommand(userId, role === "owner", deps, reply);
     default:

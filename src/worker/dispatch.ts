@@ -7,6 +7,8 @@ export const POLL_CRON = "*/10 * * * *";
 export const WATCHDOG_CRON = "43 * * * *";
 /** Cron that starts the weekly company-list expansion (Mondays 06:00 UTC). */
 export const EXPAND_CRON = "0 6 * * 1";
+/** Cron that sends each recipient's daily report: 12:00 UTC = 09:00 Brazil time (UTC-3). */
+export const REPORT_CRON = "0 12 * * *";
 
 export const POLL_WORKFLOW = "poll.yml";
 export const EXPAND_WORKFLOW = "expand-companies.yml";

@@ -7,6 +7,7 @@ import {
   EXPAND_WORKFLOW,
   POLL_CRON,
   POLL_WORKFLOW,
+  REPORT_CRON,
   WATCHDOG_CRON,
 } from "../src/worker/dispatch";
 import worker from "../src/worker/index";
@@ -90,19 +91,27 @@ describe("dispatchWorkflow", () => {
 describe("scheduled()", () => {
   const T = Date.UTC(2026, 9, 12, 6, 0, 0);
   let urls: string[];
+  let bodies: { chat_id: unknown; text: string }[];
 
   beforeEach(async () => {
     await env.DB.batch([
       env.DB.prepare("DELETE FROM deliveries"),
+      env.DB.prepare("DELETE FROM users"),
       env.DB.prepare("DELETE FROM jobs"),
       env.DB.prepare("DELETE FROM companies"),
       env.DB.prepare("DELETE FROM settings"),
     ]);
     urls = [];
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+    bodies = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       urls.push(url);
       if (url.startsWith("https://api.github.com/")) return new Response(null, { status: 204 });
+      const body = JSON.parse(String(init?.body ?? "{}")) as { chat_id: unknown; text: string };
+      bodies.push(body);
+      if (String(body.chat_id) === "3003") {
+        return Response.json({ ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" }, { status: 403 });
+      }
       return Response.json({ ok: true, result: { message_id: 1 } });
     });
   });
@@ -111,14 +120,19 @@ describe("scheduled()", () => {
     vi.unstubAllGlobals();
   });
 
-  const run = (cron: string) =>
+  const run = (cron: string, scheduledTime = T) =>
     worker.scheduled(
-      { cron, scheduledTime: T, noRetry() {} } as ScheduledController,
+      { cron, scheduledTime, noRetry() {} } as ScheduledController,
       { ...env, GITHUB_DISPATCH_TOKEN: "ghtok", GITHUB_REPO: "me/bot" },
     );
 
   it("uses the poll, watchdog and weekly expansion crons (keep in sync with wrangler.toml)", () => {
-    expect([POLL_CRON, WATCHDOG_CRON, EXPAND_CRON]).toEqual(["*/10 * * * *", "43 * * * *", "0 6 * * 1"]);
+    expect([POLL_CRON, WATCHDOG_CRON, EXPAND_CRON, REPORT_CRON]).toEqual([
+      "*/10 * * * *",
+      "43 * * * *",
+      "0 6 * * 1",
+      "0 12 * * *",
+    ]);
   });
 
   it("starts the poller on the 10-minute cron", async () => {
@@ -129,6 +143,18 @@ describe("scheduled()", () => {
   it("starts the expansion workflow on the weekly cron", async () => {
     await run(EXPAND_CRON);
     expect(urls).toEqual(["https://api.github.com/repos/me/bot/actions/workflows/expand-companies.yml/dispatches"]);
+  });
+
+  it("sends the daily reports on the 09:00 Brazil cron; a member's 403 doesn't stop the owner's", async () => {
+    await env.DB.prepare("INSERT INTO users (user_id, name, active, added_at) VALUES ('3003', NULL, 1, 1), ('4004', NULL, 1, 2)").run();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await run(REPORT_CRON, Date.UTC(2026, 9, 6, 12, 0, 0));
+    expect(urls.every((u) => /^https:\/\/api\.telegram\.org\/bot[^/]+\/sendMessage$/.test(u))).toBe(true);
+    expect(bodies.map((b) => String(b.chat_id))).toEqual([env.OWNER_USER_ID, "3003", "4004"]);
+    expect(bodies[0]!.text).toContain("Daily report — Monday, Oct 5");
+    expect(bodies[0]!.text).toContain("Applied yesterday: 0");
+    expect(spy.mock.calls.flat().join(" ")).toContain("403");
+    spy.mockRestore();
   });
 
   it("runs the watchdog on the hourly cron, never dispatching a workflow", async () => {

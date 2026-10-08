@@ -3,8 +3,9 @@ import { bindingDriver } from "../core/store/driver-binding";
 import { TelegramClient, TelegramError } from "../core/telegram/client";
 import { redactSecrets } from "../core/util";
 import { handleUpdate } from "./commands";
-import { dispatchPoll, dispatchWorkflow, EXPAND_CRON, EXPAND_WORKFLOW, POLL_CRON } from "./dispatch";
+import { dispatchPoll, dispatchWorkflow, EXPAND_CRON, EXPAND_WORKFLOW, POLL_CRON, REPORT_CRON } from "./dispatch";
 import type { WorkerEnv } from "./env";
+import { runDailyReports } from "./report";
 import { runWatchdog } from "./watchdog";
 
 export const WEBHOOK_PATH = "/telegram/webhook";
@@ -69,9 +70,13 @@ export default {
       await dispatchWorkflow(github, EXPAND_WORKFLOW);
       return;
     }
-    // WATCHDOG_CRON (and any other cron) runs the health watchdog.
     const store = new Store(bindingDriver(env.DB));
     const telegram = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN });
+    if (controller.cron === REPORT_CRON) {
+      await runDailyReports(store, telegram, env.OWNER_USER_ID, controller.scheduledTime, [env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_WEBHOOK_SECRET]);
+      return;
+    }
+    // WATCHDOG_CRON (and any other cron) runs the health watchdog.
     await runWatchdog(store, telegram, env.OWNER_USER_ID, Date.now());
   },
 } satisfies ExportedHandler<WorkerEnv>;

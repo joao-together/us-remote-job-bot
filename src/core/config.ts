@@ -109,3 +109,18 @@ export const BASELINE_COMPANIES_PER_RUN = 400;
  * (10 minutes later) continues. A job killed mid-send is never resent, so ending cleanly matters.
  */
 export const DELIVERY_TIME_BUDGET_MS = 6 * 60 * 1000;
+
+/**
+ * Daily report time zone as a fixed UTC offset in minutes: Brazil (America/Sao_Paulo) has been
+ * UTC-3 all year since it abolished daylight saving time in 2019.
+ */
+export const REPORT_TZ_OFFSET_MIN = -180;
+
+/**
+ * Max recipients the daily report cron sends to per run. The Worker free plan allows 50
+ * subrequests per invocation; each report is one Telegram call, plus a few D1 queries.
+ */
+export const REPORT_MAX_RECIPIENTS = 40;
+
+/** Max applications listed by name in one report (the rest are summarized as "…and K more"). */
+export const REPORT_MAX_LISTED = 25;

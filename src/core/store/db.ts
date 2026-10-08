@@ -66,6 +66,25 @@ export interface PendingJob extends JobRow {
 /** A job a user marked applied; `actionAt` is when that user marked it. */
 export type AppliedJob = PendingJob;
 
+/** Time window of a report: actions in [start, end), plus "this week" since weekStart. */
+export interface ReportWindow {
+  start: number;
+  end: number;
+  weekStart: number;
+}
+
+/** One user's report counts (see Store.reportStats). */
+export interface ReportStats {
+  /** Applied in the window. */
+  applied: number;
+  appliedWeek: number;
+  appliedAll: number;
+  /** Skipped in the window. */
+  skipped: number;
+  /** Alerts sent to the user in the window. */
+  alerts: number;
+}
+
 /** An invited user (the owner is never stored). */
 export interface UserRow {
   userId: string;
@@ -773,6 +792,93 @@ export class Store {
       params: [userId, opts.includeLegacy ? 1 : 0, userId, limit],
     });
     return rows.map((r) => ({ ...toPendingJob(r), actionAt: numOrNull(r.applied_at) }));
+  }
+
+  /**
+   * Report counts for each of `userIds` in one query: applied and skipped actions whose action_at
+   * falls in [start, end) (only each delivery's current action counts, so Skip→Applied counts
+   * once, as applied), applied since `weekStart`, applied ever, and alerts sent in [start, end).
+   * `legacyUserId` (the owner) also gets jobs marked applied before per-user deliveries existed
+   * (jobs.user_action), unless they have a deliveries row for that job. Users with no rows get
+   * all zeros. Reads the deliveries rows of these users once (no index on user_id alone).
+   */
+  async reportStats(userIds: readonly string[], win: ReportWindow, legacyUserId?: string): Promise<Map<string, ReportStats>> {
+    const out = new Map<string, ReportStats>();
+    for (const id of userIds) out.set(id, { applied: 0, appliedWeek: 0, appliedAll: 0, skipped: 0, alerts: 0 });
+    if (userIds.length === 0) return out;
+    const legacy = legacyUserId !== undefined && userIds.includes(legacyUserId);
+    for (const ids of chunk([...userIds], MAX_IN_PARAMS - 10)) {
+      const rows = await this.driver.query<Raw>({
+        sql: `SELECT user_id,
+            SUM(user_action = 'applied' AND action_at >= ? AND action_at < ?) AS applied,
+            SUM(user_action = 'applied' AND action_at >= ?) AS applied_week,
+            SUM(user_action = 'applied') AS applied_all,
+            SUM(user_action = 'skipped' AND action_at >= ? AND action_at < ?) AS skipped,
+            SUM(sent_at >= ? AND sent_at < ?) AS alerts
+          FROM deliveries WHERE user_id IN (${placeholders(ids.length)}) GROUP BY user_id
+          UNION ALL
+          SELECT ? AS user_id,
+            SUM(j.action_at >= ? AND j.action_at < ?), SUM(j.action_at >= ?), COUNT(*), 0, 0
+          FROM jobs j WHERE ? = 1 AND j.user_action = 'applied'
+            AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.job_id = j.id AND d.user_id = ?)`,
+        params: [
+          win.start, win.end, win.weekStart, win.start, win.end, win.start, win.end,
+          ...ids,
+          legacyUserId ?? "", win.start, win.end, win.weekStart,
+          legacy && ids.includes(legacyUserId!) ? 1 : 0, legacyUserId ?? "",
+        ],
+      });
+      for (const r of rows) {
+        const s = out.get(String(r.user_id));
+        if (!s) continue;
+        s.applied += num(r.applied ?? 0);
+        s.appliedWeek += num(r.applied_week ?? 0);
+        s.appliedAll += num(r.applied_all ?? 0);
+        s.skipped += num(r.skipped ?? 0);
+        s.alerts += num(r.alerts ?? 0);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Jobs each of `userIds` marked applied with action_at in [start, end), newest first, in one
+   * query (served by the deliveries_applied / jobs_applied indexes). `legacyUserId` (the owner)
+   * also gets legacy jobs.user_action rows, as in listApplied. At most `limitPerUser` per user.
+   */
+  async appliedBetween(
+    userIds: readonly string[],
+    start: number,
+    end: number,
+    opts: { legacyUserId?: string; limitPerUser?: number } = {},
+  ): Promise<Map<string, AppliedJob[]>> {
+    const out = new Map<string, AppliedJob[]>();
+    for (const id of userIds) out.set(id, []);
+    if (userIds.length === 0) return out;
+    const cols = "j.*, c.name AS company_name, c.ats AS ats, c.board_token AS board_token";
+    const legacyUserId = opts.legacyUserId;
+    for (const ids of chunk([...userIds], MAX_IN_PARAMS - 10)) {
+      const legacy = legacyUserId !== undefined && ids.includes(legacyUserId);
+      const rows = await this.driver.query<Raw>({
+        sql: `SELECT ${cols}, d.user_id AS report_user, d.action_at AS applied_at
+            FROM deliveries d JOIN jobs j ON j.id = d.job_id JOIN companies c ON c.id = j.company_id
+            WHERE d.user_id IN (${placeholders(ids.length)}) AND d.user_action = 'applied'
+              AND d.action_at >= ? AND d.action_at < ?
+          UNION ALL
+          SELECT ${cols}, ? AS report_user, j.action_at AS applied_at
+            FROM jobs j JOIN companies c ON c.id = j.company_id
+            WHERE ? = 1 AND j.user_action = 'applied' AND j.action_at >= ? AND j.action_at < ?
+              AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.job_id = j.id AND d.user_id = ?)
+          ORDER BY applied_at DESC, id DESC`,
+        params: [...ids, start, end, legacyUserId ?? "", legacy ? 1 : 0, start, end, legacyUserId ?? ""],
+      });
+      for (const r of rows) {
+        const list = out.get(String(r.report_user));
+        if (!list || (opts.limitPerUser !== undefined && list.length >= opts.limitPerUser)) continue;
+        list.push({ ...toPendingJob(r), actionAt: numOrNull(r.applied_at) });
+      }
+    }
+    return out;
   }
 
   // ---- users (whitelist) ----

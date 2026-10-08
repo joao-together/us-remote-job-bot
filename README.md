@@ -17,7 +17,7 @@ It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sou
 - **Promotion.** The moment a wide board posts a new role that passes the match rules, you get the alert and the board becomes fast.
 - **Demotion.** Once a week, fast boards with no new matching role in 30 days (and added more than 30 days ago) become wide. Boards you `/add` start fast.
 - **Each run** (Store.listCompaniesForRun) checks: all fast boards, this 10-minute slot's wide boards, boards waiting for `/add` validation, and up to 400 newly added boards that still need their silent baseline. With ~1,100 fast and ~8,000 wide boards that is ~2,450 boards per run, about 3–5 minutes at 24 requests in flight.
-- **Schedules** come from the Worker's cron triggers (GitHub's own scheduler is unreliable): `*/10 * * * *` starts *Poll job boards*, `43 * * * *` runs the watchdog, `0 6 * * 1` (Mondays 06:00 UTC) starts *Expand company list*.
+- **Schedules** come from the Worker's cron triggers (GitHub's own scheduler is unreliable): `*/10 * * * *` starts *Poll job boards*, `43 * * * *` runs the watchdog, `0 6 * * 1` (Mondays 06:00 UTC) starts *Expand company list*, `0 12 * * *` (09:00 Brazil time) sends the daily report.
 - **Free tiers.** D1 reads only the rows a run polls (one index serves every part of the selection), roughly 0.4M rows read and 10k–40k rows written per day at ~9,000 boards (limits: 5M and 100k; details in `src/core/config.ts` above `DB_BATCH_SIZE`). A public repo has unlimited Actions minutes.
 
 ## Setup
@@ -100,7 +100,10 @@ Send `/status` to the bot — it should reply.
 | `/exclude remove <word>` / `/exclude list` | Manage excluded words |
 | `/pause` / `/resume` | Stop/start alerts. Jobs found while paused are never sent later. |
 | `/applied` | Your last 20 jobs marked ✅ Applied |
+| `/report` | Your daily report for today so far (Brazil time) |
 | `/invite <id>` / `/revoke <id>` / `/users` | Give someone the alerts, take them away, list who has them (see below) |
+
+**Daily report:** every day at 09:00 Brazil time (12:00 UTC; Brazil is UTC-3 all year) the owner and every invited user get their own report for the previous Brazil day: jobs applied (with links, up to 25), skipped and alerts received that day, plus applied this week (since Monday 00:00 Brazil time) and all time. It is sent even on a day with no activity. `/report` shows the same for today so far.
 
 Each alert shows the title, company, location, salary (when the board lists it), how long ago it was posted, and the apply link (tap to open, long-press to copy). A ⚠️ under the location means the posting doesn't clearly say US (e.g. just "Remote") or is limited to some states — check before applying.
 
@@ -130,7 +133,7 @@ The bot is private: only you (`OWNER_USER_ID`) and people you invite can use it,
 What invited people get:
 
 - **The same job alerts as you**, each with its own ✅ Applied / ❌ Skip buttons. Their taps and their `/applied` list are their own and never change yours.
-- `/start`, `/help`, `/status` and `/applied`. Everything else — `/add`, `/remove`, `/companies`, `/exclude`, `/pause`, `/resume`, `/invite`, `/revoke`, `/users` — is owner-only and answers *"Only the owner can do that."*
+- `/start`, `/help`, `/status`, `/applied` and `/report`, plus their own daily report. Everything else — `/add`, `/remove`, `/companies`, `/exclude`, `/pause`, `/resume`, `/invite`, `/revoke`, `/users` — is owner-only and answers *"Only the owner can do that."*
 - Settings are global: `/pause` and excluded words apply to everyone. Watchdog warnings and `/add` confirmations go to you only.
 
 If someone blocks the bot, the poller logs the failed send and carries on with everyone else.

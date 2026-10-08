@@ -7,9 +7,10 @@ preview_urls = false
 # "*/10": starts the GitHub Actions poller (GitHub's own scheduler is unreliable).
 # "43 * * * *": hourly watchdog that warns if polling stops succeeding.
 # "0 6 * * 1": weekly (Monday 06:00 UTC) start of the "Expand company list" workflow.
+# "0 12 * * *": daily report to every recipient at 09:00 Brazil time (UTC-3, no DST).
 # The free plan allows up to 5 cron triggers per Worker.
 [triggers]
-crons = ["*/10 * * * *", "43 * * * *", "0 6 * * 1"]
+crons = ["*/10 * * * *", "43 * * * *", "0 6 * * 1", "0 12 * * *"]
 
 [[d1_databases]]
 binding = "DB"

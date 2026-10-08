@@ -631,3 +631,46 @@ describe("/users", () => {
     );
   });
 });
+
+describe("/report", () => {
+  beforeEach(async () => {
+    clock = T0; // Tue Oct 6 2026, 09:00 Brazil time
+    await store.inviteUser(String(MEMBER));
+  });
+
+  it("is listed in both help texts", async () => {
+    expect(await send("/help")).toContain("/report");
+    expect(await send("/help", { from: MEMBER })).toContain("/report");
+  });
+
+  it("replies to the owner with today's report so far", async () => {
+    const c = await addCompany("Acme", "acme");
+    const id = await sentJob(c.id, "1", { title: "Owner role" });
+    await store.recordDelivery(id, String(OWNER), 1, T0);
+    await handleUpdate(callback(`a:${id}`), deps());
+    const reply = await send("/report");
+    expect(tg.sent.at(-1)?.chatId).toBe(OWNER);
+    expect(reply).toContain("Daily report — Tuesday, Oct 6");
+    expect(reply).toContain("Applied today: 1");
+    expect(reply).toContain("Alerts received today: 1");
+    expect(reply).toContain("Today's applications:");
+    expect(reply).toContain("Owner role</a> — Acme");
+  });
+
+  it("replies to a member with their own report only", async () => {
+    const c = await addCompany("Acme", "acme");
+    const id = await sentJob(c.id, "1", { title: "Owner role" });
+    await handleUpdate(callback(`a:${id}`), deps());
+    const reply = await send("/report", { from: MEMBER });
+    expect(tg.sent.at(-1)?.chatId).toBe(MEMBER);
+    expect(reply).toContain("Applied today: 0");
+    expect(reply).toContain("No applications today");
+    expect(reply).not.toContain("Owner role");
+  });
+
+  it("is not available to unknown users", async () => {
+    await send("/report", { from: STRANGER });
+    expect(tg.sent.some((m) => m.html.includes("Daily report"))).toBe(false);
+    expect(tg.sent.find((m) => m.chatId === STRANGER)?.html).toContain("This bot is private");
+  });
+});
