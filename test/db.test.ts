@@ -60,7 +60,22 @@ describe("jobs", () => {
     ]);
     const [restricted, us] = await store.listPending();
     expect(restricted).toMatchObject({ locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY" });
-    expect(us).toMatchObject({ locationClass: "us", locationReason: null });
+    expect(us).toMatchObject({ locationClass: "us", locationReason: null, locationAlsoMexico: false });
+  });
+
+  it("round-trips alsoMexico as a '+mx' suffix on the stored class, only for US classes", async () => {
+    const c = await addCompany();
+    await store.runBatch([
+      store.stmtInsertJob(job(c, "a", { locationAlsoMexico: true })),
+      store.stmtInsertJob(job(c, "b", { locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY", locationAlsoMexico: true })),
+      store.stmtInsertJob(job(c, "c", { locationClass: "mx", locationAlsoMexico: true })),
+    ]);
+    const stored = await env.DB.prepare("SELECT location_class FROM jobs ORDER BY id").all();
+    expect(stored.results.map((r) => r.location_class)).toEqual(["us+mx", "us_restricted+mx", "mx"]);
+    const [a, b, mx] = await store.listPending();
+    expect(a).toMatchObject({ locationClass: "us", locationAlsoMexico: true });
+    expect(b).toMatchObject({ locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY", locationAlsoMexico: true });
+    expect(mx).toMatchObject({ locationClass: "mx", locationAlsoMexico: false });
   });
 
   it("loads known job ids per company", async () => {

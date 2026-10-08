@@ -171,6 +171,9 @@ async function handleCallback(cb: CallbackQuery, { store, telegram, now }: Comma
 
 // ---- commands ----
 
+const MEXICO_HELP =
+  "Remote roles open to Mexico (or LATAM) are sent too, starting with 🇲🇽 <b>MEXICO REMOTE</b>. US alerts that also list a remote-Mexico location add 🇲🇽 Also open to Mexico.";
+
 const OWNER_HELP = [
   "<b>US remote job alerts</b>",
   "",
@@ -188,6 +191,8 @@ const OWNER_HELP = [
   "/applied — jobs you marked applied",
   "/report — today's applications so far (sent daily at 09:00 Brazil time for the day before)",
   "/help — this message",
+  "",
+  MEXICO_HELP,
 ].join("\n");
 
 const MEMBER_HELP = [
@@ -199,6 +204,8 @@ const MEMBER_HELP = [
   "/applied — jobs you marked applied",
   "/report — today's applications so far (sent daily at 09:00 Brazil time for the day before)",
   "/help — this message",
+  "",
+  MEXICO_HELP,
 ].join("\n");
 
 const OWNER_ONLY = new Set(["add", "remove", "companies", "exclude", "pause", "resume", "invite", "revoke", "users"]);

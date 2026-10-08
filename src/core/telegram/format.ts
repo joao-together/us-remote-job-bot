@@ -2,7 +2,7 @@ import { POSTED_AGO_MAX_MS } from "../config";
 import type { LocationClass } from "../match/rules";
 
 /** The location classes that can reach an alert (the others fail matching). */
-export type AlertLocationClass = Extract<LocationClass, "us" | "us_restricted" | "ambiguous">;
+export type AlertLocationClass = Extract<LocationClass, "us" | "us_restricted" | "mx" | "ambiguous">;
 export type JobAction = "applied" | "skipped";
 
 export interface JobAlert {
@@ -11,6 +11,8 @@ export interface JobAlert {
   locationText: string;
   locationClass: AlertLocationClass;
   locationReason?: string;
+  /** A US alert whose posting also lists a remote-Mexico location. */
+  alsoMexico?: boolean;
   salaryText?: string;
   postedAt?: number;
   applyUrl: string;
@@ -56,12 +58,19 @@ export function formatPostedAgo(postedAt: number | undefined, now: number): stri
 }
 
 export function formatJobAlert(job: JobAlert, now: number): string {
-  const lines = [`<b>${field(job.title, MAX_TITLE)}</b>`, `🏢 ${field(job.companyName, MAX_FIELD)}`];
+  const mx = job.locationClass === "mx";
+  const lines = mx ? ["🇲🇽 <b>MEXICO REMOTE</b>"] : [];
+  lines.push(`<b>${field(job.title, MAX_TITLE)}</b>`, `🏢 ${field(job.companyName, MAX_FIELD)}`);
 
   lines.push(`📍 ${field(job.locationText, MAX_FIELD)}`);
-  if (job.locationClass !== "us") {
-    const reason = job.locationReason?.trim() || "Check location eligibility";
-    lines.push(`⚠️ ${field(reason, MAX_REASON)}`);
+  const reason = job.locationReason?.trim();
+  if (mx) {
+    if (reason) lines.push(`⚠️ ${field(reason, MAX_REASON)}`);
+  } else if (job.locationClass !== "us") {
+    lines.push(`⚠️ ${field(reason || "Check location eligibility", MAX_REASON)}`);
+  }
+  if (job.alsoMexico && (job.locationClass === "us" || job.locationClass === "us_restricted")) {
+    lines.push("🇲🇽 Also open to Mexico");
   }
 
   if (job.salaryText?.trim()) lines.push(`💰 ${field(job.salaryText, MAX_FIELD)}`);

@@ -45,6 +45,8 @@ export interface JobRow {
   locationClass: LocationClass | null;
   /** Why the location was flagged, recorded at detection; null for plain US jobs. */
   locationReason: string | null;
+  /** A US/US-restricted job whose posting also lists a remote-Mexico location (see encodeLocationClass). */
+  locationAlsoMexico: boolean;
   applyUrl: string;
   postedAt: number | null;
   salaryText: string | null;
@@ -154,6 +156,7 @@ export interface NewJob {
   locationText: string;
   locationClass?: LocationClass | null;
   locationReason?: string | null;
+  locationAlsoMexico?: boolean;
   applyUrl: string;
   postedAt?: number | null;
   salaryText?: string | null;
@@ -217,6 +220,25 @@ function toCompany(r: Raw): CompanyRow {
   };
 }
 
+/**
+ * jobs.location_class is free TEXT, so alsoMexico is stored in it as a "+mx" suffix ("us+mx",
+ * "us_restricted+mx") instead of needing a new column. Only toJob and the job statements read or
+ * write the column, and rows without the suffix decode exactly as before.
+ */
+const ALSO_MEXICO_SUFFIX = "+mx";
+
+export function encodeLocationClass(cls: LocationClass | null | undefined, alsoMexico?: boolean): string | null {
+  if (!cls) return null;
+  return alsoMexico && (cls === "us" || cls === "us_restricted") ? cls + ALSO_MEXICO_SUFFIX : cls;
+}
+
+export function decodeLocationClass(stored: string | null): { locationClass: LocationClass | null; locationAlsoMexico: boolean } {
+  if (stored?.endsWith(ALSO_MEXICO_SUFFIX)) {
+    return { locationClass: stored.slice(0, -ALSO_MEXICO_SUFFIX.length) as LocationClass, locationAlsoMexico: true };
+  }
+  return { locationClass: stored as LocationClass | null, locationAlsoMexico: false };
+}
+
 function toJob(r: Raw): JobRow {
   return {
     id: num(r.id),
@@ -225,7 +247,7 @@ function toJob(r: Raw): JobRow {
     title: String(r.title),
     normalizedTitle: String(r.normalized_title),
     locationText: String(r.location_text ?? ""),
-    locationClass: strOrNull(r.location_class) as LocationClass | null,
+    ...decodeLocationClass(strOrNull(r.location_class)),
     locationReason: strOrNull(r.location_reason),
     applyUrl: String(r.apply_url),
     postedAt: numOrNull(r.posted_at),
@@ -542,7 +564,7 @@ export class Store {
         job.title,
         job.normalizedTitle,
         job.locationText,
-        job.locationClass ?? null,
+        encodeLocationClass(job.locationClass, job.locationAlsoMexico),
         job.locationReason ?? null,
         job.applyUrl,
         job.postedAt ?? null,
@@ -567,7 +589,7 @@ export class Store {
         job.title,
         job.normalizedTitle,
         job.locationText,
-        job.locationClass ?? null,
+        encodeLocationClass(job.locationClass, job.locationAlsoMexico),
         job.locationReason ?? null,
         job.applyUrl,
         job.postedAt ?? null,

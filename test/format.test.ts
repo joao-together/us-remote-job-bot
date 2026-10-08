@@ -70,6 +70,49 @@ describe("formatJobAlert", () => {
     expect(html).toContain("⚠️ Only CA, NY &amp; TX");
   });
 
+  it("puts the Mexico banner first for an mx job, with no warning when there is no reason", () => {
+    const html = formatJobAlert(job({ locationText: "Remote - Mexico", locationClass: "mx" }), NOW);
+    const lines = html.split("\n");
+    expect(lines[0]).toBe("🇲🇽 <b>MEXICO REMOTE</b>");
+    expect(lines[1]).toBe("<b>Senior Engineer</b>");
+    expect(html).toContain("📍 Remote - Mexico");
+    expect(html).not.toContain("⚠️");
+    expect(html).not.toContain("Also open to Mexico");
+  });
+
+  it("shows the LATAM reason under an mx job's location", () => {
+    const html = formatJobAlert(
+      job({ locationText: "Remote - LATAM", locationClass: "mx", locationReason: "LATAM — check Mexico is eligible" }),
+      NOW,
+    );
+    expect(html.split("\n")[0]).toBe("🇲🇽 <b>MEXICO REMOTE</b>");
+    expect(html).toContain("📍 Remote - LATAM\n⚠️ LATAM — check Mexico is eligible");
+  });
+
+  it("escapes an mx job's title, location and reason", () => {
+    const html = formatJobAlert(
+      job({ title: "Sr <Dev> & Co", locationText: "Remote <MX> & more", locationClass: "mx", locationReason: "a<b>&c" }),
+      NOW,
+    );
+    expect(html).toContain("<b>Sr &lt;Dev&gt; &amp; Co</b>");
+    expect(html).toContain("📍 Remote &lt;MX&gt; &amp; more");
+    expect(html).toContain("⚠️ a&lt;b&gt;&amp;c");
+  });
+
+  it("adds 'Also open to Mexico' to a US alert with alsoMexico, without the banner", () => {
+    const html = formatJobAlert(job({ locationText: "Remote - US / Remote - Mexico", alsoMexico: true }), NOW);
+    expect(html.split("\n")[0]).toBe("<b>Senior Engineer</b>");
+    expect(html).toContain("📍 Remote - US / Remote - Mexico\n🇲🇽 Also open to Mexico");
+    expect(html).not.toContain("MEXICO REMOTE");
+    expect(html).not.toContain("⚠️");
+    const restricted = formatJobAlert(
+      job({ locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY", alsoMexico: true }),
+      NOW,
+    );
+    expect(restricted).toContain("⚠️ Limited to some US states: CA, NY\n🇲🇽 Also open to Mexico");
+    expect(formatJobAlert(job(), NOW)).not.toContain("Mexico");
+  });
+
   it("shows no posted-ago for an old (2021) Ashby date", () => {
     const html = formatJobAlert(job({ postedAt: Date.parse("2021-03-01T00:00:00Z") }), NOW);
     expect(html).not.toContain("posted");

@@ -250,8 +250,8 @@ describe("classifyLocation", () => {
     ["US Remote (Washington, Oregon only)", "yes", [], "us_restricted"],
     ["Remote – EMEA", "yes", [], "non_us"],
     ["Remote - Canada", "yes", [], "non_us"],
-    ["Remote, LATAM", "yes", [], "non_us"],
-    ["Remote - Latin America", "yes", [], "non_us"],
+    ["Remote, LATAM", "yes", [], "mx"],
+    ["Remote - Latin America", "yes", [], "mx"],
     ["Bengaluru, India", "unknown", [], "non_us"],
     ["Berlin, DE", "yes", [], "non_us"],
     ["Toronto, ON, CA", "yes", [], "non_us"],
@@ -275,12 +275,81 @@ describe("classifyLocation", () => {
     expect(loc("", "unknown")).toEqual({ cls: "onsite", reason: "no remote signal" });
   });
 
-  it("passes us, us_restricted and ambiguous only", () => {
+  it("passes us, us_restricted, mx and ambiguous only", () => {
     expect(locationPasses("us")).toBe(true);
+    expect(locationPasses("mx")).toBe(true);
     expect(locationPasses("us_restricted")).toBe(true);
     expect(locationPasses("ambiguous")).toBe(true);
     expect(locationPasses("non_us")).toBe(false);
     expect(locationPasses("onsite")).toBe(false);
+  });
+});
+
+describe("Mexico-remote locations", () => {
+  // [text, remote, codes, expected class, alsoMexico]
+  const cases: [string, RemoteSignal, string[], LocationClass, boolean][] = [
+    ["Remote - Mexico", "unknown", [], "mx", false],
+    ["Remote - Mexico", "yes", [], "mx", false],
+    ["Mexico (Remote)", "unknown", [], "mx", false],
+    ["Remote - México", "unknown", [], "mx", false],
+    ["Remote, MX", "unknown", [], "mx", false],
+    ["Remote", "yes", ["MX"], "mx", false],
+    ["Mexico", "yes", [], "mx", false],
+    ["CDMX - Remote", "unknown", [], "mx", false],
+    ["Ciudad de México (Remote)", "unknown", [], "mx", false],
+    ["Guadalajara, Jalisco (Remote)", "unknown", [], "mx", false],
+    ["Monterrey, Nuevo León - Remote", "unknown", [], "mx", false],
+    ["Remote - Querétaro", "unknown", [], "mx", false],
+    ["Remote - LATAM", "unknown", [], "mx", false],
+    ["Latin America - Remote", "unknown", [], "mx", false],
+    ["Remoto - Latinoamérica / Remote", "unknown", [], "mx", false],
+    ["Remote – LATAM / Remote", "unknown", [], "mx", false],
+    ["Remote - LATAM / EMEA", "unknown", [], "mx", false],
+    ["Remote - Canada / Mexico", "unknown", [], "mx", false],
+    ["Remote - Canada / Mexico", "yes", [], "mx", false],
+    ["Remote - Brazil", "unknown", [], "non_us", false],
+    ["Remote - Colombia", "yes", [], "non_us", false],
+    ["Mexico City", "unknown", [], "onsite", false],
+    ["Mexico", "unknown", [], "onsite", false],
+    ["Guadalajara, Jalisco", "unknown", [], "onsite", false],
+    ["Hybrid - Mexico City", "yes", [], "onsite", false],
+    ["Albuquerque, New Mexico", "unknown", [], "onsite", false],
+    ["Albuquerque, NM", "unknown", [], "onsite", false],
+    ["Remote - New Mexico", "unknown", [], "us", false],
+    ["Remote - NM", "unknown", [], "us", false],
+    ["Remote - US / Remote - Mexico", "unknown", [], "us", true],
+    ["Remote - US / Mexico", "unknown", [], "us", true],
+    ["Remote (US or Mexico)", "unknown", [], "us", true],
+    ["Remote", "yes", ["US", "MX"], "us", true],
+    ["Remote - CA, NY only / Remote - Mexico", "unknown", [], "us_restricted", true],
+    ["Remote - US / Remote - LATAM", "unknown", [], "us", false],
+    ["Remote - US / Hybrid - Mexico City", "unknown", [], "us", false],
+    ["Remote - New Mexico / Remote - US", "unknown", [], "us", false],
+  ];
+
+  it.each(cases)("%j (remote %s, codes %j) -> %s, alsoMexico %s", (text, remote, codes, expected, alsoMexico) => {
+    const result = loc(text, remote, codes);
+    expect(result.cls).toBe(expected);
+    expect(result.alsoMexico ?? false).toBe(alsoMexico);
+  });
+
+  it("covers at least 25 location strings", () => {
+    expect(cases.length).toBeGreaterThanOrEqual(25);
+  });
+
+  it("gives LATAM a check-eligibility reason and plain Mexico none", () => {
+    expect(loc("Remote - LATAM", "unknown")).toEqual({ cls: "mx", reason: "LATAM — check Mexico is eligible" });
+    expect(loc("Remote - Mexico", "unknown")).toEqual({ cls: "mx" });
+    expect(loc("Remote - US / Remote - Mexico", "unknown")).toEqual({ cls: "us", alsoMexico: true });
+  });
+
+  it("passes a senior remote-Mexico engineering role and still rejects a junior one", () => {
+    expect(matchesTarget(job("Senior Software Engineer", "Remote - Mexico", "unknown"))).toEqual({
+      pass: true,
+      location: { cls: "mx" },
+    });
+    expect(matchesTarget(job("Junior Software Engineer", "Remote - Mexico")).pass).toBe(false);
+    expect(matchesTarget(job("Senior Software Engineer", "Mexico City", "unknown")).pass).toBe(false);
   });
 });
 

@@ -1,11 +1,13 @@
 import type { NormalizedJob } from "../ats/types";
 import { MAX_EXCLUDED_WORD_LENGTH } from "../config";
 
-export type LocationClass = "us" | "us_restricted" | "ambiguous" | "non_us" | "onsite";
+export type LocationClass = "us" | "us_restricted" | "mx" | "ambiguous" | "non_us" | "onsite";
 
 export interface LocationResult {
   cls: LocationClass;
   reason?: string;
+  /** Set only on us/us_restricted results when another listed location is remote in Mexico. */
+  alsoMexico?: boolean;
 }
 
 export type LocationInput = Pick<NormalizedJob, "locationText" | "remote" | "countryCodes">;
@@ -187,7 +189,7 @@ const NON_US_TERMS = phrases([
   "emea", "apac", "latam", "anz", "dach", "nordics", "benelux", "cee", "europe", "european", "eu", "uk",
   "united kingdom", "england", "scotland", "wales", "ireland", "latin america", "south america",
   "central america", "asia", "africa", "middle east", "canada", "ontario", "quebec", "british columbia",
-  "alberta", "mexico", "brazil", "argentina", "colombia", "chile", "peru", "uruguay", "costa rica", "ecuador",
+  "alberta", "brazil", "argentina", "colombia", "chile", "peru", "uruguay", "costa rica", "ecuador",
   "india", "pakistan", "bangladesh", "sri lanka", "philippines", "vietnam", "indonesia", "malaysia",
   "thailand", "singapore", "china", "hong kong", "taiwan", "japan", "korea", "australia", "new zealand",
   "israel", "uae", "turkey", "egypt", "nigeria", "kenya", "south africa", "germany", "france", "spain",
@@ -196,13 +198,23 @@ const NON_US_TERMS = phrases([
   "finland", "estonia", "latvia", "lithuania", "london", "berlin", "munich", "paris", "dublin", "amsterdam",
   "madrid", "barcelona", "lisbon", "warsaw", "krakow", "zurich", "stockholm", "toronto", "vancouver",
   "montreal", "bangalore", "bengaluru", "hyderabad", "pune", "chennai", "sydney", "melbourne", "tokyo",
-  "tel aviv", "sao paulo", "buenos aires", "mexico city",
+  "tel aviv", "sao paulo", "buenos aires",
 ]);
+/**
+ * Mexico by name, city or state. Bare "mexico" is checked separately so "New Mexico" (a US state)
+ * never counts; "MX" counts only as an upper-case country token or country code.
+ */
+const MEXICO_PLACES = phrases([
+  "méxico", "cdmx", "ciudad de mexico", "guadalajara", "monterrey", "querétaro", "queretaro", "puebla",
+  "tijuana", "mérida", "merida", "león", "leon", "jalisco", "nuevo leon", "nuevo león",
+]);
+const LATAM_TERMS = phrases(["latam", "latin america", "latinoamérica", "latinoamerica", "latino america"]);
+const LATAM_REASON = "LATAM — check Mexico is eligible";
 const CANADIAN_CODES = new Set(["ON", "BC", "QC", "AB", "MB", "SK", "NS", "NB", "NL", "PE"]);
 const BROAD_REGIONS = phrases(["americas", "worldwide", "anywhere", "global", "globally"]);
 const ONSITE_TERMS = phrases(["hybrid", "onsite", "on site", "in office", "office based"]);
 
-const RANK: Record<LocationClass, number> = { us: 4, us_restricted: 3, ambiguous: 2, non_us: 1, onsite: 0 };
+const RANK: Record<LocationClass, number> = { us: 5, us_restricted: 4, mx: 3, ambiguous: 2, non_us: 1, onsite: 0 };
 
 /** Expands dotted abbreviations ("U.S.", "D.C.") so tokenizing doesn't split them into letters. */
 function expandAbbreviations(text: string): string {
@@ -220,7 +232,16 @@ interface Evidence {
   weakStates: boolean;
   usCity: boolean;
   nonUs: boolean;
+  /** Mexico named explicitly (country, "MX", city or state); never "New Mexico". */
+  mexico: boolean;
+  /** Latin America as a region. */
+  latam: boolean;
   broad: boolean;
+}
+
+/** "mexico" anywhere except right after "new" (New Mexico is a US state). */
+function namesMexico(t: string[]): boolean {
+  return t.some((tok, i) => tok === "mexico" && t[i - 1] !== "new");
 }
 
 function gatherEvidence(segment: string, countryCodes: string[]): Evidence {
@@ -232,7 +253,10 @@ function gatherEvidence(segment: string, countryCodes: string[]): Evidence {
     americaIdx >= 0 && !["latin", "south", "central"].includes(t[americaIdx - 1] ?? "");
   const usCountry = hasAny(t, US_TERMS) || bareAmerica || countryCodes.includes("US");
 
+  const mexico = namesMexico(t) || hasAny(t, MEXICO_PLACES) || raw.some((w) => w === "MX") || countryCodes.includes("MX");
+  const latam = hasAny(t, LATAM_TERMS);
   const nonUs =
+    mexico ||
     hasAny(t, NON_US_TERMS) ||
     raw.some((w) => CANADIAN_CODES.has(w)) ||
     (countryCodes.length > 0 && !countryCodes.includes("US"));
@@ -255,6 +279,8 @@ function gatherEvidence(segment: string, countryCodes: string[]): Evidence {
     weakStates: fullStates.length === 0 && codeStates.length > 0,
     usCity: hasAny(t, US_CITIES),
     nonUs,
+    mexico,
+    latam,
     broad: hasAny(t, BROAD_REGIONS),
   };
 }
@@ -264,12 +290,35 @@ function remove(list: string[], item: string): void {
   if (i >= 0) list.splice(i, 1);
 }
 
-function classifySegment(segment: string, jobRemote: "yes" | "unknown", countryCodes: string[]): LocationResult {
-  const t = tokenize(segment);
-  if (hasAny(t, ONSITE_TERMS)) return { cls: "onsite", reason: "Hybrid or on-site" };
-  const remote = t.includes("remote") || t.includes("remotely") ? "yes" : jobRemote;
-  const ev = gatherEvidence(segment, countryCodes);
+function saysRemote(t: string[]): boolean {
+  return t.includes("remote") || t.includes("remotely");
+}
 
+interface SegmentResult extends LocationResult {
+  /** The segment is remote and names Mexico explicitly (feeds alsoMexico). */
+  remoteMexico: boolean;
+}
+
+/**
+ * `textRemote`: some segment of the whole location text says remote. A Mexico/LATAM segment with
+ * no remote word of its own then counts as remote ("Remote - Canada / Mexico"); US segments keep
+ * the per-segment rule.
+ */
+function classifySegment(
+  segment: string,
+  jobRemote: "yes" | "unknown",
+  countryCodes: string[],
+  textRemote: boolean,
+): SegmentResult {
+  const t = tokenize(segment);
+  if (hasAny(t, ONSITE_TERMS)) return { cls: "onsite", reason: "Hybrid or on-site", remoteMexico: false };
+  const ev = gatherEvidence(segment, countryCodes);
+  const remote = saysRemote(t) || jobRemote === "yes" || (textRemote && (ev.mexico || ev.latam)) ? "yes" : "unknown";
+  const result = classifyEvidence(t, ev, remote);
+  return { ...result, remoteMexico: remote === "yes" && ev.mexico };
+}
+
+function classifyEvidence(t: string[], ev: Evidence, remote: "yes" | "unknown"): LocationResult {
   // A lone two-letter code next to a foreign place ("Berlin, DE") isn't US evidence.
   const strongPlace = ev.states.length > 0 && !ev.weakStates;
   const usPlace = strongPlace || ev.usCity || (ev.weakStates && !ev.nonUs);
@@ -283,12 +332,16 @@ function classifySegment(segment: string, jobRemote: "yes" | "unknown", countryC
       }
       return { cls: "us" };
     }
+    if (ev.mexico) return { cls: "mx" };
+    if (ev.latam) return { cls: "mx", reason: LATAM_REASON };
     if (ev.nonUs) return { cls: "non_us", reason: "Remote outside the US" };
     if (ev.broad) return { cls: "ambiguous", reason: "Location is a broad region; doesn't say US" };
     return { cls: "ambiguous", reason: "Location doesn't say US" };
   }
 
-  // Remote unknown: only a country-wide US location is worth flagging.
+  // Remote unknown: only a country-wide US location is worth flagging. Mexico without a remote
+  // signal is treated like a US city: an office job.
+  if (ev.mexico && !ev.usCountry) return { cls: "onsite", reason: "no remote signal" };
   if (ev.nonUs && !ev.usCountry) return { cls: "non_us", reason: "Location outside the US" };
   if (ev.usCountry && !usPlace) {
     return { cls: "ambiguous", reason: "Doesn't say remote; location is just the US" };
@@ -298,20 +351,26 @@ function classifySegment(segment: string, jobRemote: "yes" | "unknown", countryC
 
 export function classifyLocation(job: LocationInput): LocationResult {
   if (job.remote === "no") return { cls: "onsite", reason: "Not remote" };
-  const text = expandAbbreviations(job.locationText);
+  const text = expandAbbreviations(job.locationText.normalize("NFC"));
   const segments = text.split(/\s\/\s|[;|]/).filter((s) => s.trim() !== "");
   if (segments.length === 0) segments.push("");
 
-  let best: LocationResult | undefined;
+  const textRemote = saysRemote(tokenize(text));
+  let best: SegmentResult | undefined;
+  let remoteMexico = false;
   for (const segment of segments) {
-    const result = classifySegment(segment, job.remote, job.countryCodes);
+    const result = classifySegment(segment, job.remote, job.countryCodes, textRemote);
+    remoteMexico ||= result.remoteMexico;
     if (!best || RANK[result.cls] > RANK[best.cls]) best = result;
   }
-  return best!;
+  const out: LocationResult = { cls: best!.cls };
+  if (best!.reason !== undefined) out.reason = best!.reason;
+  if (remoteMexico && (out.cls === "us" || out.cls === "us_restricted")) out.alsoMexico = true;
+  return out;
 }
 
 export function locationPasses(cls: LocationClass): boolean {
-  return cls === "us" || cls === "us_restricted" || cls === "ambiguous";
+  return cls === "us" || cls === "us_restricted" || cls === "mx" || cls === "ambiguous";
 }
 
 // ---------- Excluded words ----------

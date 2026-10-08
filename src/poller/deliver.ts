@@ -36,7 +36,7 @@ export interface DeliverStats {
 
 /** Only matching classes are ever pending; anything else (a null class) is shown as ambiguous. */
 function alertClass(cls: LocationClass | null): AlertLocationClass {
-  return cls === "us" || cls === "us_restricted" ? cls : "ambiguous";
+  return cls === "us" || cls === "us_restricted" || cls === "mx" ? cls : "ambiguous";
 }
 
 /**
@@ -120,6 +120,7 @@ export async function deliver(deps: DeliverDeps): Promise<DeliverStats> {
         locationText: job.locationText,
         locationClass: alertClass(job.locationClass),
         locationReason: job.locationReason ?? undefined,
+        alsoMexico: job.locationAlsoMexico,
         salaryText: salaryText ?? undefined,
         postedAt: job.postedAt ?? undefined,
         applyUrl: job.applyUrl,

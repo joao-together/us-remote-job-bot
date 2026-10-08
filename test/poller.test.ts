@@ -119,6 +119,38 @@ describe("detection and delivery", () => {
     expect(t.telegram.sends[0]!.html).toContain("⚠️ Location doesn't say US");
   });
 
+  it("sends a remote-Mexico senior engineer job with the Mexico banner", async () => {
+    boards.lever.acme = [];
+    await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    boards.lever.acme.push(
+      leverPosting("mx", SENIOR, { location: "Remote - Mexico", country: "MX" }),
+      leverPosting("mxcity", "Senior Backend Engineer", { location: "Mexico City", country: "MX", workplaceType: "onsite" }),
+    );
+    await poll();
+    expect(t.telegram.sends).toHaveLength(1);
+    const html = t.telegram.sends[0]!.html;
+    expect(html.split("\n")[0]).toBe("🇲🇽 <b>MEXICO REMOTE</b>");
+    expect(html).toContain(`<b>${SENIOR}</b>`);
+    expect(html).toContain("📍 Remote - Mexico");
+    expect(html).not.toContain("⚠️");
+    expect((await jobRows()).find((r) => r.board_job_id === "mx")).toMatchObject({ status: "sent", location_class: "mx" });
+    expect(await jobStatus("mxcity")).toBeUndefined();
+  });
+
+  it("stores alsoMexico for a US job that also lists Mexico and shows it in the alert", async () => {
+    boards.lever.acme = [];
+    await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    boards.lever.acme.push(leverPosting("both", SENIOR, { location: "Remote - US / Remote - Mexico", country: "US" }));
+    await poll();
+    expect(t.telegram.sends).toHaveLength(1);
+    const html = t.telegram.sends[0]!.html;
+    expect(html.split("\n")[0]).toBe(`<b>${SENIOR}</b>`);
+    expect(html).toContain("🇲🇽 Also open to Mexico");
+    expect((await jobRows()).find((r) => r.board_job_id === "both")).toMatchObject({ location_class: "us+mx" });
+  });
+
   it("does not re-send a known job whose title changed (AE6)", async () => {
     boards.lever.acme = [];
     await addCompany(t.store, "Acme", "lever", "acme");

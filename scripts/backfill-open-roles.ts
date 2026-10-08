@@ -43,7 +43,7 @@ for (const f of found.slice(-8)) console.log("  newest:", f.j.title, "@", f.c.na
 if (dryRun) process.exit(0);
 const now = Date.now();
 const stmts = found.flatMap((f, i) => {
-  const row = { companyId: f.c.id, boardJobId: f.j.id, title: f.j.title, normalizedTitle: normalizeTitle(f.j.title), locationText: f.j.locationText, locationClass: f.loc.cls, locationReason: f.loc.reason ?? null, applyUrl: f.j.applyUrl, postedAt: f.j.postedAt ?? null, salaryText: f.j.salaryText ?? null, status: "pending" as const };
+  const row = { companyId: f.c.id, boardJobId: f.j.id, title: f.j.title, normalizedTitle: normalizeTitle(f.j.title), locationText: f.j.locationText, locationClass: f.loc.cls, locationReason: f.loc.reason ?? null, locationAlsoMexico: f.loc.alsoMexico ?? false, applyUrl: f.j.applyUrl, postedAt: f.j.postedAt ?? null, salaryText: f.j.salaryText ?? null, status: "pending" as const };
   // Insert for new ids; re-queue ids stored as legacy 'seen' rows (the insert would no-op on those).
   return [store.stmtInsertJob(row, now + i), store.stmtRequeueSeenJob(row, now + i)];
 });

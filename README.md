@@ -107,7 +107,9 @@ Send `/status` to the bot — it should reply.
 
 Each alert shows the title, company, location, salary (when the board lists it), how long ago it was posted, and the apply link (tap to open, long-press to copy). A ⚠️ under the location means the posting doesn't clearly say US (e.g. just "Remote") or is limited to some states — check before applying.
 
-**What counts as a match:** remote, US-eligible (or flagged ambiguous) engineering roles at any level except junior/entry.
+**Mexico-remote alerts:** remote roles that name Mexico explicitly ("Remote - Mexico", "Remote, MX" or country code MX, "CDMX - Remote", Mexico City, Guadalajara, Monterrey, Querétaro, Puebla, Tijuana, Mérida, León, Jalisco, Nuevo León) are sent too, with a **🇲🇽 MEXICO REMOTE** banner as the first line. Remote LATAM / Latin America roles get the same banner plus "⚠️ LATAM — check Mexico is eligible". A Mexico location without any remote signal is treated as an office job and skipped, and "New Mexico" is the US state, not Mexico. When a posting lists both a US-remote and a Mexico-remote location, it is sent as a normal US alert with an extra "🇲🇽 Also open to Mexico" line. When a posting lists several locations, the best one wins: US, then US-restricted, then Mexico, then ambiguous.
+
+**What counts as a match:** remote, US-eligible (or flagged ambiguous) or Mexico-remote engineering roles at any level except junior/entry.
 
 - **Roles:** software engineering (backend, frontend, full stack, mobile, product, language-named titles) plus adjacent engineering: DevOps, SRE / Site Reliability, Platform, Infrastructure, Cloud, Systems (only with a software context, e.g. "Software Systems Engineer", "Distributed Systems Engineer"), Data / Analytics Engineer, ML / AI / MLOps / Applied ML Engineer, Security Engineer (application, cloud, product), Developer Productivity, Build / Release Engineer.
 - **Levels:** Senior / Sr. / Snr, Staff, Senior Staff, Principal, Distinguished, Lead / Tech Lead, mid-level markers (II, III, IV, 2, 3, L3, Mid) and unleveled titles ("Software Engineer", "Backend Engineer").

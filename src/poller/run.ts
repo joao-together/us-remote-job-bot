@@ -103,7 +103,13 @@ function classifyNew(job: NormalizedJob, company: CompanyRow, baselining: boolea
   else if (findExcludedWord(`${job.title}\n${job.description ?? ""}`, ctx.excludedWords)) status = "excluded";
   else if (ctx.settings.paused) status = "suppressed";
   else status = "pending";
-  return { ...base, locationClass: match.location.cls, locationReason: match.location.reason ?? null, status };
+  return {
+    ...base,
+    locationClass: match.location.cls,
+    locationReason: match.location.reason ?? null,
+    locationAlsoMexico: match.location.alsoMexico ?? false,
+    status,
+  };
 }
 
 function fetchCompany(company: CompanyRow, fetcher: Fetcher): Promise<FetchResult<NormalizedJob[]>> {
