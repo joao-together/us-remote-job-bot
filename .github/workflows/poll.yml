@@ -1,6 +1,6 @@
 name: Poll job boards
 
-# Started every 10 minutes by the Cloudflare Worker (src/worker/dispatch.ts) through the
+# Started every 15 minutes by the Cloudflare Worker (src/worker/dispatch.ts) through the
 # workflow_dispatch API, because GitHub's own `schedule` trigger proved unreliable.
 on:
   workflow_dispatch:

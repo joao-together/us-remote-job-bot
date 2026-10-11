@@ -2,7 +2,7 @@ import { REQUEST_TIMEOUT_MS, USER_AGENT } from "../core/config";
 import { errorMessage, redactSecrets } from "../core/util";
 
 /** Cron that starts the GitHub Actions poller (GitHub's own scheduler is unreliable). */
-export const POLL_CRON = "*/10 * * * *";
+export const POLL_CRON = "*/15 * * * *";
 /** Cron that runs the health watchdog. */
 export const WATCHDOG_CRON = "43 * * * *";
 /** Cron that starts the weekly company-list expansion (Mondays 06:00 UTC). */

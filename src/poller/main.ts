@@ -1,4 +1,4 @@
-// Entry point for the hourly GitHub Actions run (Node). Reads config from env.
+// Entry point for the GitHub Actions poller run (every 15 minutes) (Node). Reads config from env.
 import { Store } from "../core/store/db";
 import { httpDriver } from "../core/store/driver-http";
 import { TelegramClient } from "../core/telegram/client";

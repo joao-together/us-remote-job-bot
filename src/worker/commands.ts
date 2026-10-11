@@ -332,7 +332,7 @@ async function companiesCommand({ store }: CommandDeps, reply: Reply): Promise<v
   const fast = active.filter((c) => c.tier === "fast");
   const wide = active.length - fast.length;
   const lines = [`<b>Watching ${active.length} ${active.length === 1 ? "company" : "companies"}</b>`];
-  if (wide > 0) lines.push(`${fast.length} checked every 10 minutes (listed below), ${wide} more checked hourly.`);
+  if (wide > 0) lines.push(`${fast.length} checked every 15 minutes (listed below), ${wide} more checked every 90 minutes.`);
   const failing = fast.filter((c) => c.failing).length;
   if (failing > 0) lines.push(`⚠️ = failing (${failing})`);
   lines.push(...fast.map((c) => `${escapeHtml(c.name)}${c.failing ? " ⚠️" : ""}`));

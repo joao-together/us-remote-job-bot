@@ -208,7 +208,7 @@ describe("buildStatus", () => {
     expect(html).toContain("A&lt;B &amp; Co");
     expect(html).not.toContain("A<B");
     expect(html).toContain("Co 1");
-    expect(html).toContain("Companies: 10 fast (every 10 min), 0 wide (hourly)");
+    expect(html).toContain("Companies: 10 fast (every 15 min), 0 wide (every 90 min)");
     expect(html).toContain("Companies waiting for validation: 1");
     expect(html).toContain("Last check: 2h ago");
     expect(html).toContain("Last successful check: 2h ago");
@@ -220,7 +220,7 @@ describe("buildStatus", () => {
     await seedCompanies(3, 1, "Fast");
     await seedCompanies(5, 2, "Wide", "wide");
     const html = await buildStatus(store, T0);
-    expect(html).toContain("Companies: 3 fast (every 10 min), 5 wide (hourly)");
+    expect(html).toContain("Companies: 3 fast (every 15 min), 5 wide (every 90 min)");
     expect(html).toContain("Fast companies failing: 1");
     expect(html).toContain("Fast 0");
     expect(html).not.toContain("Wide 0");

@@ -9,14 +9,14 @@ export const FETCH_CONCURRENCY = 24;
 
 /**
  * Wide-tier boards are split into this many groups by `id % WIDE_SLOTS`; each run (every
- * WIDE_SLOT_MS) checks one group, so every wide board is checked about once an hour. Fast-tier
+ * WIDE_SLOT_MS) checks one group, so every wide board is checked about every 90 minutes. Fast-tier
  * boards are checked every run. Must match the `id % 6` expression index in
  * migrations/0004_tiers.sql (a different value stays correct but reads every wide row per run).
  */
 export const WIDE_SLOTS = 6;
 
 /** Length of one wide slot: the poller's schedule interval. */
-export const WIDE_SLOT_MS = 10 * 60 * 1000;
+export const WIDE_SLOT_MS = 15 * 60 * 1000;
 
 /**
  * A fast board with no new matching job for this long (and added at least this long ago) is
@@ -64,7 +64,7 @@ export const MAX_EXCLUDED_WORD_LENGTH = 40;
  * index, sqlite_sequence). Only jobs that pass matching get a row; non-matching ids are stored
  * compactly in companies.seen_ids.
  *
- * Estimates for ~1,100 fast + ~8,000 wide boards, 144 runs/day (every 10 minutes):
+ * Estimates for ~1,100 fast + ~8,000 wide boards, 96 runs/day (every 15 minutes):
  * - Reads per run ≈ fast rows + wide/WIDE_SLOTS rows + the not-yet-baselined batch, each read
  *   once through the companies_tier_slot index (measured: ~1 row read per selected row):
  *   1,100 + 1,350 ≈ 2,450; plus the stored job rows of the polled boards, read twice (known ids and
@@ -106,7 +106,7 @@ export const BASELINE_COMPANIES_PER_RUN = 400;
 /**
  * Max time one poller run spends sending alerts. Fetching ~2,500–2,900 boards takes a few minutes
  * and the Actions job times out at 15, so delivery stops between jobs after this and the next run
- * (10 minutes later) continues. A job killed mid-send is never resent, so ending cleanly matters.
+ * (15 minutes later) continues. A job killed mid-send is never resent, so ending cleanly matters.
  */
 export const DELIVERY_TIME_BUDGET_MS = 6 * 60 * 1000;
 

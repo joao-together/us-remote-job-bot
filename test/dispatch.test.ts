@@ -128,7 +128,7 @@ describe("scheduled()", () => {
 
   it("uses the poll, watchdog and weekly expansion crons (keep in sync with wrangler.toml)", () => {
     expect([POLL_CRON, WATCHDOG_CRON, EXPAND_CRON, REPORT_CRON]).toEqual([
-      "*/10 * * * *",
+      "*/15 * * * *",
       "43 * * * *",
       "0 6 * * 1",
       "0 12 * * *",

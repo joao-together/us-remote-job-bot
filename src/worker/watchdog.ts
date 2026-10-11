@@ -74,7 +74,7 @@ export function formatStatus({ settings, counts, failing, now }: StatusInput): s
     `Last check: ${formatAgo(settings.lastPollStartAt, now)}`,
     `Last successful check: ${formatAgo(settings.lastSuccessfulPollAt, now)}`,
     "",
-    `Companies: ${counts.fast} fast (every 10 min), ${counts.wide} wide (hourly)`,
+    `Companies: ${counts.fast} fast (every 15 min), ${counts.wide} wide (every 90 min)`,
     `Fast companies failing: ${counts.failing}`,
   ];
   if (failing.length > 0) {

@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { BASELINE_COMPANIES_PER_RUN, WIDE_SLOTS } from "../src/core/config";
+import { BASELINE_COMPANIES_PER_RUN, WIDE_SLOT_MS, WIDE_SLOTS } from "../src/core/config";
 import type { Fetcher } from "../src/core/ats/types";
 import { mapPool, redactError, runPoll, wideSlot } from "../src/poller/run";
 import leverFixture from "./fixtures/lever/postings.json";
@@ -430,7 +430,9 @@ function fetchedTokens(): string[] {
     .sort();
 }
 
-const SLOT_MS = 10 * 60_000;
+const SLOT_MS = WIDE_SLOT_MS;
+/** Time for the wide rotation to come back to the same group. */
+const WIDE_CYCLE_MS = WIDE_SLOTS * SLOT_MS;
 
 /** The first time at or after T0 whose wide slot is this company's. */
 function slotTimeFor(id: number): number {
@@ -494,7 +496,7 @@ describe("tiers", () => {
       .first<{ tier: string; last_match_at: number | null; seen_ids: string; last_error: string | null }>();
   }
 
-  it("wideSlot cycles through WIDE_SLOTS groups, one per 10 minutes", () => {
+  it("wideSlot cycles through WIDE_SLOTS groups, one per WIDE_SLOT_MS", () => {
     const base = Math.floor(T0 / SLOT_MS) * SLOT_MS;
     const slots = Array.from({ length: 7 }, (_, i) => wideSlot(base + i * SLOT_MS));
     expect(new Set(slots.slice(0, 6)).size).toBe(6);
@@ -551,7 +553,7 @@ describe("tiers", () => {
     await poll(); // baseline: the matching wd000-1 is only recorded as seen
     expect(await tierRow(id!)).toMatchObject({ tier: "wide", last_match_at: null });
 
-    t.clock.now = slotTimeFor(id!) + 2 * HOUR;
+    t.clock.now = slotTimeFor(id!) + 2 * WIDE_CYCLE_MS;
     boards.lever.wd000!.push(leverPosting("x-1", "Office Manager"));
     await runPoll(t.deps);
     expect(JSON.parse((await tierRow(id!))!.seen_ids)).toContain("x-1");
@@ -565,7 +567,7 @@ describe("tiers", () => {
     await runPoll(t.deps);
     await env.DB.prepare("UPDATE companies SET last_error = 'marker' WHERE id = ?").bind(id).run();
     const snapshot = await tierRow(id!);
-    t.clock.now += HOUR;
+    t.clock.now += WIDE_CYCLE_MS;
     t.fetcher.requests.length = 0;
     await runPoll(t.deps);
     expect(fetchedTokens()).toEqual(["wd000"]);

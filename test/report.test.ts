@@ -147,7 +147,7 @@ describe("formatReport", () => {
         "Skipped yesterday: 0",
         "Alerts received yesterday: 0",
         "",
-        "No applications yesterday — new matching roles keep arriving every 10 minutes.",
+        "No applications yesterday — new matching roles keep arriving every 15 minutes.",
       ].join("\n"),
     );
     expect(formatReport({ period: "today", dayStart: TODAY, stats, applied: [] })).toContain("No applications today —");

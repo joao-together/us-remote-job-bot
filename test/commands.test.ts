@@ -272,7 +272,7 @@ describe("/companies", () => {
     await env.DB.prepare("UPDATE companies SET tier = 'wide' WHERE id = ?").bind(w.id).run();
     const reply = await send("/companies");
     expect(reply).toContain("Watching 2 companies");
-    expect(reply).toContain("1 checked every 10 minutes (listed below), 1 more checked hourly.");
+    expect(reply).toContain("1 checked every 15 minutes (listed below), 1 more checked every 90 minutes.");
     expect(reply).toContain("Fasty");
     expect(reply).not.toContain("Widey");
   });

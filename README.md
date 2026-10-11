@@ -6,18 +6,18 @@ It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sou
 
 | Part | Runs on | Does |
 |---|---|---|
-| Poller | GitHub Actions, started every 10 min by the Worker (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
-| Company list | GitHub Actions, started weekly by the Worker | Adds new live boards, moves quiet boards to the hourly tier |
+| Poller | GitHub Actions, started every 15 min by the Worker (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
+| Company list | GitHub Actions, started weekly by the Worker | Adds new live boards, moves quiet boards to the wide tier (every 90 min) |
 | Bot | Cloudflare Worker | Commands, button taps, watchdog warnings, starting the two workflows |
 | Storage | Cloudflare D1 | Companies, seen jobs, invited users, per-user deliveries, settings |
 
 ## How it works
 
-- **Two tiers.** Every company is either **fast** or **wide**. Fast boards — the ones that have produced a matching role recently — are checked on every run, every 10 minutes. Wide boards (thousands of boards that rarely or never post a matching role) are split into 6 groups by id and one group is checked per run, so each is checked about **once an hour**.
+- **Two tiers.** Every company is either **fast** or **wide**. Fast boards — the ones that have produced a matching role recently — are checked on every run, every 15 minutes. Wide boards (thousands of boards that rarely or never post a matching role) are split into 6 groups by id and one group is checked per run, so each is checked about **every 90 minutes**.
 - **Promotion.** The moment a wide board posts a new role that passes the match rules, you get the alert and the board becomes fast.
 - **Demotion.** Once a week, fast boards with no new matching role in 30 days (and added more than 30 days ago) become wide. Boards you `/add` start fast.
-- **Each run** (Store.listCompaniesForRun) checks: all fast boards, this 10-minute slot's wide boards, boards waiting for `/add` validation, and up to 400 newly added boards that still need their silent baseline. With ~1,100 fast and ~8,000 wide boards that is ~2,450 boards per run, about 3–5 minutes at 24 requests in flight.
-- **Schedules** come from the Worker's cron triggers (GitHub's own scheduler is unreliable): `*/10 * * * *` starts *Poll job boards*, `43 * * * *` runs the watchdog, `0 6 * * 1` (Mondays 06:00 UTC) starts *Expand company list*, `0 12 * * *` (09:00 Brazil time) sends the daily report.
+- **Each run** (Store.listCompaniesForRun) checks: all fast boards, this 15-minute slot's wide boards, boards waiting for `/add` validation, and up to 400 newly added boards that still need their silent baseline. With ~1,100 fast and ~8,000 wide boards that is ~2,450 boards per run, about 3–5 minutes at 24 requests in flight.
+- **Schedules** come from the Worker's cron triggers (GitHub's own scheduler is unreliable): `*/15 * * * *` starts *Poll job boards*, `43 * * * *` runs the watchdog, `0 6 * * 1` (Mondays 06:00 UTC) starts *Expand company list*, `0 12 * * *` (09:00 Brazil time) sends the daily report.
 - **Free tiers.** D1 reads only the rows a run polls (one index serves every part of the selection), roughly 0.4M rows read and 10k–40k rows written per day at ~9,000 boards (limits: 5M and 100k; details in `src/core/config.ts` above `DB_BATCH_SIZE`). A public repo has unlimited Actions minutes.
 
 ## Setup
@@ -71,9 +71,9 @@ curl -s "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 
 Send `/status` to the bot — it should reply.
 
-### 4. Set up the hourly poller
+### 4. Set up the poller
 
-1. Push this repo to a **public** GitHub repository (secrets stay hidden; public repos get unlimited Actions minutes, which a 10-minute schedule needs). The workflow re-enables itself each run so GitHub's 60-day inactivity rule doesn't switch it off. For a private repo, change the cron to every 30 minutes to stay within 2,000 free minutes/month.
+1. Push this repo to a **public** GitHub repository (secrets stay hidden; public repos get unlimited Actions minutes, which a 15-minute schedule needs). The workflow re-enables itself each run so GitHub's 60-day inactivity rule doesn't switch it off. For a private repo, change the cron to every 30 minutes to stay within 2,000 free minutes/month.
 2. Create a Cloudflare API token at *My Profile → API Tokens → Create Token → Custom token* with only **Account → D1 → Edit**.
 3. In the GitHub repo, add these *Settings → Secrets and variables → Actions* secrets:
 
@@ -92,7 +92,7 @@ Send `/status` to the bot — it should reply.
 
 | Command | What it does |
 |---|---|
-| `/status` | Last check, companies per tier (fast every 10 min / wide hourly), failing fast companies, jobs sent today |
+| `/status` | Last check, companies per tier (fast every 15 min / wide every 90 min), failing fast companies, jobs sent today |
 | `/add <link>` | Watch a company, e.g. `/add https://jobs.lever.co/acme`. Confirmed within the hour. |
 | `/remove <name>` | Stop watching a company (`/remove lever:acme` if the name is ambiguous) |
 | `/companies` | List fast-tier companies (⚠️ = failing) and how many wide-tier ones are watched |

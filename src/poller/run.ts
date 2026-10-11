@@ -195,7 +195,7 @@ function companyOutcome(
 
 /**
  * The wide-tier group a run at `at` checks: one of WIDE_SLOTS groups per WIDE_SLOT_MS window, so
- * runs every 10 minutes cover every wide board about once an hour.
+ * runs every 15 minutes cover every wide board about every 90 minutes.
  */
 export function wideSlot(at: number): number {
   return Math.floor(at / WIDE_SLOT_MS) % WIDE_SLOTS;

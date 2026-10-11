@@ -1,6 +1,6 @@
 // Weekly company-list maintenance (started by the Worker's "0 6 * * 1" cron, or by hand):
 // 1. Demotes fast-tier companies with no new matching job in 30 days (and added more than 30 days
-//    ago) to the wide tier, which is checked hourly instead of every 10 minutes.
+//    ago) to the wide tier, which is checked every 90 minutes instead of every 15 minutes.
 // 2. Probes candidate boards from public lists and adds every live board not already in the DB, as
 //    active + unbaselined so the poller baselines them silently: boards with at least one open job
 //    passing the match rules start 'fast', other boards that answered start 'wide'. Boards that
