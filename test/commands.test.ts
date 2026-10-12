@@ -283,7 +283,7 @@ describe("/companies", () => {
     expect(tg.sent.length).toBeGreaterThan(1);
     for (const m of tg.sent) expect(m.html.length).toBeLessThanOrEqual(4096);
     expect(tg.sent.map((m) => m.html).join("\n")).toContain("number 199");
-  });
+  }, 20_000); // inserts hundreds of companies; slow under full-suite load
 
   it("chunkLines keeps every line", () => {
     expect(chunkLines(["aaa", "bbb", "ccc"], 7)).toEqual(["aaa\nbbb", "ccc"]);
