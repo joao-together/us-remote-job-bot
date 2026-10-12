@@ -135,9 +135,22 @@ describe("scheduled()", () => {
     ]);
   });
 
-  it("starts the poller on the 10-minute cron", async () => {
+  it("starts the poller on the 15-minute cron", async () => {
     await run(POLL_CRON);
     expect(urls).toEqual(["https://api.github.com/repos/me/bot/actions/workflows/poll.yml/dispatches"]);
+  });
+
+  it("treats a stale or unknown cron (Cloudflare kept firing the old */10) as a poll, not the watchdog", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await run("*/10 * * * *");
+    expect(urls).toEqual(["https://api.github.com/repos/me/bot/actions/workflows/poll.yml/dispatches"]);
+    expect(log.mock.calls.flat().join(" ")).toContain('unknown cron "*/10 * * * *"');
+    log.mockRestore();
+  });
+
+  it("runs only the watchdog (no poll dispatch) on the watchdog cron", async () => {
+    await run(WATCHDOG_CRON);
+    expect(urls.some((u) => u.startsWith("https://api.github.com/"))).toBe(false);
   });
 
   it("starts the expansion workflow on the weekly cron", async () => {

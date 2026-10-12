@@ -3,7 +3,7 @@ import { bindingDriver } from "../core/store/driver-binding";
 import { TelegramClient, TelegramError } from "../core/telegram/client";
 import { redactSecrets } from "../core/util";
 import { handleUpdate } from "./commands";
-import { dispatchPoll, dispatchWorkflow, EXPAND_CRON, EXPAND_WORKFLOW, POLL_CRON, REPORT_CRON } from "./dispatch";
+import { dispatchPoll, dispatchWorkflow, EXPAND_CRON, EXPAND_WORKFLOW, POLL_CRON, REPORT_CRON, WATCHDOG_CRON } from "./dispatch";
 import type { WorkerEnv } from "./env";
 import { runDailyReports } from "./report";
 import { runWatchdog } from "./watchdog";
@@ -62,21 +62,23 @@ export default {
 
   async scheduled(controller: ScheduledController, env: WorkerEnv): Promise<void> {
     const github = { token: env.GITHUB_DISPATCH_TOKEN, repo: env.GITHUB_REPO };
-    if (controller.cron === POLL_CRON) {
-      await dispatchPoll(github);
-      return;
-    }
     if (controller.cron === EXPAND_CRON) {
       await dispatchWorkflow(github, EXPAND_WORKFLOW);
       return;
     }
-    const store = new Store(bindingDriver(env.DB));
-    const telegram = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN });
-    if (controller.cron === REPORT_CRON) {
-      await runDailyReports(store, telegram, env.OWNER_USER_ID, controller.scheduledTime, [env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_WEBHOOK_SECRET]);
+    if (controller.cron === REPORT_CRON || controller.cron === WATCHDOG_CRON) {
+      const store = new Store(bindingDriver(env.DB));
+      const telegram = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN });
+      if (controller.cron === REPORT_CRON) {
+        await runDailyReports(store, telegram, env.OWNER_USER_ID, controller.scheduledTime, [env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_WEBHOOK_SECRET]);
+      } else {
+        await runWatchdog(store, telegram, env.OWNER_USER_ID, Date.now());
+      }
       return;
     }
-    // WATCHDOG_CRON (and any other cron) runs the health watchdog.
-    await runWatchdog(store, telegram, env.OWNER_USER_ID, Date.now());
+    // POLL_CRON — and any other or stale cron (Cloudflare kept firing an old "*/10" after it was
+    // replaced by "*/15", which silently stopped polling) — starts the poller.
+    if (controller.cron !== POLL_CRON) console.log(`scheduled: unknown cron "${controller.cron}", treating as poll`);
+    await dispatchPoll(github);
   },
 } satisfies ExportedHandler<WorkerEnv>;
