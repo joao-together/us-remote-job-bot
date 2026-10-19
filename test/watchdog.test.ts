@@ -1,14 +1,17 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FAILING_AFTER_CONSECUTIVE } from "../src/core/config";
-import type { StatusCounts } from "../src/core/store/db";
+import type { HealthCounts, StatusCounts } from "../src/core/store/db";
 import { Store } from "../src/core/store/db";
 import { bindingDriver } from "../src/core/store/driver-binding";
 import { TelegramError } from "../src/core/telegram/client";
-import { buildStatus, evaluateHealth, runWatchdog } from "../src/worker/watchdog";
+import { buildStatus, evaluateHealth, runWatchdog, SCHEDULE_TEXT } from "../src/worker/watchdog";
 
 const HOUR = 60 * 60 * 1000;
-const T0 = Date.UTC(2026, 9, 6, 12, 0, 0);
+// 17:00 UTC: inside active hours (12:00–24:00 UTC), well past the window's first 90 minutes.
+const T0 = Date.UTC(2026, 9, 6, 17, 0, 0);
+const WINDOW_START = Date.UTC(2026, 9, 6, 12, 0, 0);
+const MIN = 60 * 1000;
 const OWNER = "42";
 
 let store: Store;
@@ -55,7 +58,7 @@ async function polled(agoMs: number) {
   await store.setSetting("last_successful_poll_at", T0 - agoMs);
 }
 
-const counts = (o: Partial<StatusCounts> = {}): StatusCounts => ({
+const counts = (o: Partial<StatusCounts & HealthCounts> = {}): StatusCounts & HealthCounts => ({
   sentToday: 0,
   active: 10,
   fast: 10,
@@ -63,12 +66,13 @@ const counts = (o: Partial<StatusCounts> = {}): StatusCounts => ({
   failing: 0,
   pendingValidation: 0,
   pending: 0,
+  anyActive: true,
   ...o,
 });
 
 describe("evaluateHealth", () => {
   it("is silent on a fresh install with no polls and no active companies", () => {
-    const { warnings } = evaluateHealth({ settings: { paused: false, excludedWords: [] }, counts: counts({ active: 0 }), now: T0 });
+    const { warnings } = evaluateHealth({ settings: { paused: false, excludedWords: [] }, counts: counts({ active: 0, fast: 0, anyActive: false }), now: T0 });
     expect(warnings).toEqual([]);
   });
 
@@ -105,6 +109,47 @@ describe("evaluateHealth", () => {
     ]);
     // No fast boards at all: nothing to compare against.
     expect(evaluateHealth({ settings, counts: counts({ active: 70, fast: 0, wide: 70, failing: 0 }), now: T0 }).warnings).toEqual([]);
+  });
+});
+
+describe("evaluateHealth in active hours", () => {
+  const stale = (lastSuccessfulPollAt: number | undefined, now: number) =>
+    evaluateHealth({
+      settings: { paused: false, excludedWords: [], lastSuccessfulPollAt, lastPollStartAt: lastSuccessfulPollAt },
+      counts: counts(),
+      now,
+    }).warnings.filter((w) => w.includes("No successful job check"));
+  const lastNight = WINDOW_START - 15 * MIN; // yesterday's last run, 23:45 UTC
+
+  it("never reports staleness outside active hours, but still reports failing boards", () => {
+    const night = Date.UTC(2026, 9, 6, 3, 0, 0);
+    expect(stale(WINDOW_START - 27 * HOUR, night)).toEqual([]);
+    expect(stale(undefined, night)).toEqual([]);
+    const { warnings } = evaluateHealth({
+      settings: { paused: false, excludedWords: [], lastSuccessfulPollAt: lastNight - 24 * HOUR },
+      counts: counts({ active: 30, fast: 30, failing: 9 }),
+      now: night,
+    });
+    expect(warnings).toEqual(["⚠️ 9 of 30 fast-checked companies are failing. Send /status to see which."]);
+  });
+
+  it("gives the first runs of the day 90 minutes, then counts staleness from the window start", () => {
+    expect(stale(lastNight, WINDOW_START + 30 * MIN)).toEqual([]);
+    expect(stale(undefined, WINDOW_START + 89 * MIN)).toEqual([]);
+    // Past the grace period, but only 1.5h of active time without a poll.
+    expect(stale(lastNight, WINDOW_START + 90 * MIN)).toEqual([]);
+    expect(stale(lastNight, WINDOW_START + 3 * HOUR)).toEqual([]);
+    // More than 3h of active time without a poll.
+    expect(stale(lastNight, WINDOW_START + 3 * HOUR + MIN)).toEqual([
+      "⚠️ No successful job check for 3h. Check the GitHub Actions 'Poll job boards' workflow (disabled? out of minutes? bad secret?).",
+    ]);
+    expect(stale(undefined, WINDOW_START + 90 * MIN)).toHaveLength(1);
+  });
+
+  it("warns when polling stops during the window", () => {
+    expect(stale(WINDOW_START + 10 * MIN, WINDOW_START + 3 * HOUR)).toEqual([]);
+    expect(stale(WINDOW_START + 10 * MIN, WINDOW_START + 3 * HOUR + 11 * MIN)).toHaveLength(1);
+    expect(stale(WINDOW_START + 10 * MIN, Date.UTC(2026, 9, 6, 23, 59, 0))).toHaveLength(1);
   });
 });
 
@@ -214,6 +259,8 @@ describe("buildStatus", () => {
     expect(html).toContain("Last successful check: 2h ago");
     expect(html).toContain("Last poll: 8 boards ok, 2 failed, 4 jobs sent");
     expect(html).toContain("Running");
+    expect(html).toContain("Checks run every 15 min, 08:00–20:00 US Eastern (12:00–24:00 UTC)");
+    expect(SCHEDULE_TEXT).toBe("Checks run every 15 min, 08:00–20:00 US Eastern (12:00–24:00 UTC)");
   });
 
   it("shows the tier split and lists only failing fast-tier companies", async () => {

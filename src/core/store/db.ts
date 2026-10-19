@@ -6,6 +6,8 @@ import { chunk } from "../util";
 
 /** D1 allows at most 100 bound parameters per statement. */
 const MAX_IN_PARAMS = 90;
+/** (company, board job id) pairs per storedJobIds query, passed as one JSON parameter. */
+const MAX_JSON_PAIRS = 1000;
 const MAX_ERROR_LENGTH = 500;
 
 export type CompanyState = "active" | "pending_validation" | "inactive";
@@ -182,6 +184,24 @@ export interface StatusCounts {
   pendingValidation: number;
   pending: number;
 }
+
+/** What the hourly watchdog checks (Store.healthCounts); a cheap subset of StatusCounts. */
+export interface HealthCounts {
+  fast: number;
+  failing: number;
+  /** Whether any company is active, in either tier. */
+  anyActive: boolean;
+}
+
+/** A stored job's natural key. */
+export interface JobKey {
+  companyId: number;
+  boardJobId: string;
+}
+
+/** Active fast companies and how many of them are failing, in one pass over the fast tier. */
+const FAST_AND_FAILING = `SELECT COUNT(*) AS fast, COALESCE(SUM(consecutive_failures >= ?), 0) AS failing
+  FROM companies WHERE state = 'active' AND tier = 'fast'`;
 
 type Raw = Record<string, unknown>;
 
@@ -534,8 +554,9 @@ export class Store {
 
   /**
    * Every board job id stored as a `jobs` row (any status, including legacy 'seen' rows), per
-   * company, loaded in chunks of company ids. Ids in companies.seen_ids are known too; the
-   * poller merges those from the company rows.
+   * company, loaded in chunks of company ids. Reads about one row per stored job of these
+   * companies (one per company with none), so the poller uses it for boards being baselined, whose
+   * whole listing is new but which have (almost) no stored jobs; see storedJobIds for the rest.
    */
   async knownJobIds(companyIds: number[]): Promise<Map<number, Set<string>>> {
     const out = new Map<number, Set<string>>();
@@ -548,6 +569,36 @@ export class Store {
       for (const r of rows) out.get(num(r.company_id))?.add(String(r.board_job_id));
     }
     return out;
+  }
+
+  /**
+   * Which of these (company, board job id) pairs are stored as `jobs` rows (any status, including
+   * legacy 'seen' rows), per company. Only companies with at least one stored pair appear. Each
+   * pair is one lookup on the UNIQUE (company_id, board_job_id) index, so D1 reads about one row
+   * per pair rather than every row of the companies; no pairs means no query at all. The pairs go
+   * in as one JSON parameter, so D1's 100-bound-parameter limit doesn't apply.
+   */
+  async storedJobIds(pairs: readonly JobKey[]): Promise<Map<number, Set<string>>> {
+    const out = new Map<number, Set<string>>();
+    for (const part of chunk(pairs, MAX_JSON_PAIRS)) {
+      const rows = await this.driver.query<{ company_id: number; board_job_id: string }>(this.storedJobIdsQuery(part));
+      for (const r of rows) {
+        const companyId = num(r.company_id);
+        const set = out.get(companyId) ?? new Set<string>();
+        set.add(String(r.board_job_id));
+        out.set(companyId, set);
+      }
+    }
+    return out;
+  }
+
+  /** The statement behind storedJobIds for one chunk (exposed for tests that check the plan). */
+  storedJobIdsQuery(pairs: readonly JobKey[]): Statement {
+    return {
+      sql: `SELECT j.company_id, j.board_job_id FROM json_each(?) AS k
+        CROSS JOIN jobs AS j ON j.company_id = json_extract(k.value, '$[0]') AND j.board_job_id = json_extract(k.value, '$[1]')`,
+      params: [JSON.stringify(pairs.map((p) => [p.companyId, String(p.boardJobId)]))],
+    };
   }
 
   /** Inserts a job; an existing (company, board job id) is left untouched. */
@@ -659,17 +710,17 @@ export class Store {
   /**
    * Repost lookup: every pending/sending/sent job of these companies first seen within the window.
    * A new id is a repost when a candidate with the same normalized title and location text is no
-   * longer on the board in the current fetch; the poller does that check in memory.
+   * longer on the board in the current fetch; the poller does that check in memory, and calls this
+   * only for companies with a new matching job in the run.
+   *
+   * INDEXED BY: with a long IN list SQLite picks jobs_status and reads every recent sent/pending
+   * row of every company (~1.7k rows per call in production); the partial jobs_repost_recent index
+   * (migration 0005) reads only these companies' candidates.
    */
   async repostCandidates(companyIds: number[], runStartedAt: number): Promise<Map<number, RepostCandidate[]>> {
     const out = new Map<number, RepostCandidate[]>();
     for (const ids of chunk(companyIds, MAX_IN_PARAMS)) {
-      const rows = await this.driver.query<Raw>({
-        sql: `SELECT company_id, board_job_id, normalized_title, location_text FROM jobs
-          WHERE company_id IN (${placeholders(ids.length)}) AND status IN ('sent', 'pending', 'sending')
-          AND first_seen_at >= ?`,
-        params: [...ids, runStartedAt - REPOST_WINDOW_MS],
-      });
+      const rows = await this.driver.query<Raw>(this.repostCandidatesQuery(ids, runStartedAt));
       for (const r of rows) {
         const companyId = num(r.company_id);
         const list = out.get(companyId) ?? [];
@@ -683,6 +734,16 @@ export class Store {
       }
     }
     return out;
+  }
+
+  /** The statement behind repostCandidates for one chunk of ids (exposed for tests that check the plan). */
+  repostCandidatesQuery(companyIds: readonly number[], runStartedAt: number): Statement {
+    return {
+      sql: `SELECT company_id, board_job_id, normalized_title, location_text FROM jobs INDEXED BY jobs_repost_recent
+        WHERE company_id IN (${placeholders(companyIds.length)}) AND status IN ('sent', 'pending', 'sending')
+        AND first_seen_at >= ?`,
+      params: [...companyIds, runStartedAt - REPOST_WINDOW_MS],
+    };
   }
 
   // ---- delivery ----
@@ -972,17 +1033,13 @@ export class Store {
     return rows.length > 0;
   }
 
+  /**
+   * Figures for /status. Reads about one row per active company (fast and failing in one pass
+   * over the fast tier, then the wide count) and only today's sent jobs (jobs_sent_at, migration
+   * 0006) rather than every sent job ever.
+   */
   async statusCounts(sinceMidnightUtc: number): Promise<StatusCounts> {
-    const rows = await this.driver.query<Raw>({
-      sql: `SELECT
-          (SELECT COUNT(*) FROM jobs WHERE status = 'sent' AND sent_at >= ?) AS sent_today,
-          (SELECT COUNT(*) FROM companies WHERE state = 'active' AND tier = 'fast') AS fast,
-          (SELECT COUNT(*) FROM companies WHERE state = 'active' AND tier = 'wide') AS wide,
-          (SELECT COUNT(*) FROM companies WHERE state = 'active' AND tier = 'fast' AND consecutive_failures >= ?) AS failing,
-          (SELECT COUNT(*) FROM companies WHERE state = 'pending_validation') AS pending_validation,
-          (SELECT COUNT(*) FROM jobs WHERE status = 'pending') AS pending`,
-      params: [sinceMidnightUtc, FAILING_AFTER_CONSECUTIVE],
-    });
+    const rows = await this.driver.query<Raw>(this.statusCountsQuery(sinceMidnightUtc));
     const r = rows[0] ?? {};
     const fast = num(r.fast ?? 0);
     const wide = num(r.wide ?? 0);
@@ -994,6 +1051,38 @@ export class Store {
       failing: num(r.failing ?? 0),
       pendingValidation: num(r.pending_validation ?? 0),
       pending: num(r.pending ?? 0),
+    };
+  }
+
+  /** The statement behind statusCounts (exposed for tests that measure rows read). */
+  statusCountsQuery(sinceMidnightUtc: number): Statement {
+    return {
+      sql: `SELECT f.fast, f.failing,
+          (SELECT COUNT(*) FROM companies WHERE state = 'active' AND tier = 'wide') AS wide,
+          (SELECT COUNT(*) FROM jobs INDEXED BY jobs_sent_at WHERE status = 'sent' AND sent_at >= ?) AS sent_today,
+          (SELECT COUNT(*) FROM companies WHERE state = 'pending_validation') AS pending_validation,
+          (SELECT COUNT(*) FROM jobs WHERE status = 'pending') AS pending
+        FROM (${FAST_AND_FAILING}) AS f`,
+      params: [sinceMidnightUtc, FAILING_AFTER_CONSECUTIVE],
+    };
+  }
+
+  /**
+   * What the hourly watchdog needs, without counting the (large) wide tier: about one row read
+   * per active fast company, plus one.
+   */
+  async healthCounts(): Promise<HealthCounts> {
+    const rows = await this.driver.query<Raw>(this.healthCountsQuery());
+    const r = rows[0] ?? {};
+    return { fast: num(r.fast ?? 0), failing: num(r.failing ?? 0), anyActive: num(r.any_active ?? 0) === 1 };
+  }
+
+  /** The statement behind healthCounts (exposed for tests that measure rows read). */
+  healthCountsQuery(): Statement {
+    return {
+      sql: `SELECT f.fast, f.failing, EXISTS (SELECT 1 FROM companies WHERE state = 'active') AS any_active
+        FROM (${FAST_AND_FAILING}) AS f`,
+      params: [FAILING_AFTER_CONSECUTIVE],
     };
   }
 }

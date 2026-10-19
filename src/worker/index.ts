@@ -1,7 +1,7 @@
 import { Store } from "../core/store/db";
 import { bindingDriver } from "../core/store/driver-binding";
 import { TelegramClient, TelegramError } from "../core/telegram/client";
-import { redactSecrets } from "../core/util";
+import { inActiveHours, redactSecrets } from "../core/util";
 import { handleUpdate } from "./commands";
 import { dispatchPoll, dispatchWorkflow, EXPAND_CRON, EXPAND_WORKFLOW, POLL_CRON, REPORT_CRON, WATCHDOG_CRON } from "./dispatch";
 import type { WorkerEnv } from "./env";
@@ -77,8 +77,15 @@ export default {
       return;
     }
     // POLL_CRON — and any other or stale cron (Cloudflare kept firing an old "*/10" after it was
-    // replaced by "*/15", which silently stopped polling) — starts the poller.
-    if (controller.cron !== POLL_CRON) console.log(`scheduled: unknown cron "${controller.cron}", treating as poll`);
+    // replaced by "*/15", which silently stopped polling) — starts the poller. A stale cron firing
+    // outside active hours (e.g. the old round-the-clock "*/15 * * * *") does nothing.
+    if (controller.cron !== POLL_CRON) {
+      if (!inActiveHours(controller.scheduledTime)) {
+        console.log(`scheduled: unknown cron "${controller.cron}" outside active hours (12:00–24:00 UTC), not polling`);
+        return;
+      }
+      console.log(`scheduled: unknown cron "${controller.cron}", treating as poll`);
+    }
     await dispatchPoll(github);
   },
 } satisfies ExportedHandler<WorkerEnv>;

@@ -2,6 +2,9 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { BASELINE_COMPANIES_PER_RUN, WIDE_SLOT_MS, WIDE_SLOTS } from "../src/core/config";
 import type { Fetcher } from "../src/core/ats/types";
+import { Store } from "../src/core/store/db";
+import type { DbDriver, Statement } from "../src/core/store/driver";
+import { normalizeParams } from "../src/core/util";
 import { mapPool, redactError, runPoll, wideSlot } from "../src/poller/run";
 import leverFixture from "./fixtures/lever/postings.json";
 import {
@@ -654,5 +657,108 @@ describe("helpers", () => {
     await poll();
     expect(await jobStatus("1")).toBeUndefined();
     expect(await seenIds(id)).toEqual(["1"]);
+  });
+});
+
+describe("D1 reads follow what changed (free plan: 5M rows read a day)", () => {
+  interface Logged {
+    sql: string;
+    params: unknown[];
+    rowsRead: number;
+  }
+
+  /** Deps whose store runs on a driver that logs every statement with D1's meta.rows_read. */
+  function metered() {
+    const log: Logged[] = [];
+    const prep = (s: Statement) => env.DB.prepare(s.sql).bind(...normalizeParams(s.params));
+    const driver: DbDriver = {
+      async query<T = Record<string, unknown>>(s: Statement): Promise<T[]> {
+        const res = await prep(s).all<T>();
+        log.push({ sql: s.sql, params: s.params ?? [], rowsRead: res.meta.rows_read });
+        return res.results;
+      },
+      async batch(stmts: Statement[]): Promise<void> {
+        const res = await env.DB.batch(stmts.map(prep));
+        stmts.forEach((s, i) => log.push({ sql: s.sql, params: s.params ?? [], rowsRead: res[i]!.meta.rows_read }));
+      },
+    };
+    const deps = { ...t.deps, store: new Store(driver, () => t.clock.now) };
+    return { log, deps, rowsRead: () => log.reduce((n, q) => n + q.rowsRead, 0) };
+  }
+  const storedLookups = (log: Logged[]) => log.filter((q) => q.sql.includes("json_each"));
+  const repostLookups = (log: Logged[]) => log.filter((q) => q.sql.includes("jobs_repost_recent"));
+  const jobsReads = (log: Logged[]) => log.filter((q) => /^\s*SELECT/i.test(q.sql) && /\bjobs\b/.test(q.sql));
+
+  /** 60 baselined boards with a long history of sent jobs that are no longer listed. */
+  async function steadyState() {
+    const ids = await addMany(60, { prefix: "st" });
+    await poll(); // baseline: every listed id goes to seen_ids
+    await env.DB.batch(
+      ids.flatMap((id) =>
+        Array.from({ length: 20 }, (_, j) =>
+          env.DB.prepare(
+            `INSERT INTO jobs (company_id, board_job_id, title, normalized_title, apply_url, status, first_seen_at, sent_at)
+             VALUES (?, ?, ?, 'senior software engineer', 'https://x', 'sent', ?, ?)`,
+          ).bind(id, `gone-${id}-${j}`, SENIOR, t.clock.now - 2 * HOUR, t.clock.now - 2 * HOUR),
+        ),
+      ),
+    );
+    return ids;
+  }
+
+  it("reads nothing from jobs for lookups when no board lists an id outside its seen_ids", async () => {
+    await steadyState();
+    const m = metered();
+    const stats = await runPoll(m.deps);
+
+    expect(stats).toMatchObject({ companiesOk: 60, newJobs: 0 });
+    expect(storedLookups(m.log)).toEqual([]);
+    expect(repostLookups(m.log)).toEqual([]);
+    // Only delivery's pending-jobs check touches jobs, and there is nothing pending.
+    expect(jobsReads(m.log).reduce((n, q) => n + q.rowsRead, 0)).toBe(0);
+    // The 60 polled company rows plus settings; the 1,200 stored jobs are never read.
+    expect(m.rowsRead()).toBeLessThanOrEqual(60 + 20);
+  });
+
+  it("looks up only unseen ids and reads repost candidates only for boards with a new match", async () => {
+    const [a, b, c] = await steadyState();
+    // a: a new matching job; b: a new non-matching job; c: lists a job already stored (sent earlier).
+    boards.lever.st000!.push(leverPosting("a-new", "Senior Backend Engineer"));
+    boards.lever.st001!.push(leverPosting("b-new", "Office Manager"));
+    boards.lever.st002!.push(leverPosting(`gone-${c}-0`, SENIOR));
+    const m = metered();
+    const stats = await runPoll(m.deps);
+
+    expect(stats).toMatchObject({ newJobs: 2, matched: 1, sent: 1 });
+    expect(await jobStatus("a-new")).toBe("sent");
+    expect(await seenIds(b!)).toContain("b-new");
+    const lookups = storedLookups(m.log);
+    expect(lookups).toHaveLength(1);
+    expect(JSON.parse(String(lookups[0]!.params[0]))).toEqual([
+      [a, "a-new"],
+      [b, "b-new"],
+      [c, `gone-${c}-0`],
+    ]);
+    expect(lookups[0]!.rowsRead).toBeLessThanOrEqual(6);
+    const reposts = repostLookups(m.log);
+    expect(reposts).toHaveLength(1);
+    expect(reposts[0]!.params.slice(0, -1)).toEqual([a]);
+    // Company a's 20 recent sent jobs (its repost candidates), not all 1,200.
+    expect(reposts[0]!.rowsRead).toBeLessThanOrEqual(25);
+  });
+
+  it("reads a baselining board's stored rows (usually none) instead of probing each of its ids", async () => {
+    boards.lever.big = Array.from({ length: 200 }, (_, i) => leverPosting(`n${i}`, SENIOR));
+    const id = await addCompany(t.store, "Big", "lever", "big");
+    const m = metered();
+    const stats = await runPoll(m.deps);
+
+    expect(stats).toMatchObject({ newJobs: 200, matched: 0 });
+    expect(await seenIds(id)).toHaveLength(200);
+    expect(storedLookups(m.log)).toEqual([]);
+    expect(repostLookups(m.log)).toEqual([]);
+    const reads = jobsReads(m.log);
+    expect(reads.map((q) => q.params)).toContainEqual([id]);
+    expect(reads.reduce((n, q) => n + q.rowsRead, 0)).toBeLessThanOrEqual(2);
   });
 });

@@ -1,5 +1,6 @@
-import { WATCHDOG_FAILING_SHARE, WATCHDOG_REWARN_MS, WATCHDOG_STALE_MS } from "../core/config";
-import { type CompanyRow, type PollStats, type Settings, type StatusCounts, Store, utcMidnight } from "../core/store/db";
+import { WATCHDOG_FAILING_SHARE, WATCHDOG_REWARN_MS, WATCHDOG_STALE_MS, WATCHDOG_WINDOW_GRACE_MS } from "../core/config";
+import { type CompanyRow, type HealthCounts, type PollStats, type Settings, type StatusCounts, Store, utcMidnight } from "../core/store/db";
+import { activeWindowStart } from "../core/util";
 import { TelegramError, type TelegramClient } from "../core/telegram/client";
 import { escapeHtml } from "../core/telegram/format";
 
@@ -7,9 +8,12 @@ const MAX_FAILING_LISTED = 10;
 
 export interface HealthInput {
   settings: Settings;
-  counts: StatusCounts;
+  counts: HealthCounts;
   now: number;
 }
+
+/** Shown in /status; keep in sync with ACTIVE_HOURS_UTC and POLL_CRON. */
+export const SCHEDULE_TEXT = "Checks run every 15 min, 08:00–20:00 US Eastern (12:00–24:00 UTC)";
 
 export function formatAgo(at: number | undefined, now: number): string {
   if (at === undefined) return "never";
@@ -26,9 +30,14 @@ export function evaluateHealth({ settings, counts, now }: HealthInput): { warnin
   const warnings: string[] = [];
   const last = settings.lastSuccessfulPollAt;
   const neverPolled = last === undefined && settings.lastPollStartAt === undefined;
-  const freshInstall = neverPolled && counts.active === 0;
+  const freshInstall = neverPolled && !counts.anyActive;
 
-  if (!freshInstall && (last === undefined || now - last > WATCHDOG_STALE_MS)) {
+  // Polls run only in active hours, so staleness is judged only then, from WATCHDOG_WINDOW_GRACE_MS
+  // after the window opens, and counts only time inside today's window.
+  const windowStart = activeWindowStart(now);
+  const judgeStaleness = windowStart !== undefined && now - windowStart >= WATCHDOG_WINDOW_GRACE_MS;
+  const staleSince = last === undefined || windowStart === undefined ? undefined : Math.max(last, windowStart);
+  if (judgeStaleness && !freshInstall && (staleSince === undefined || now - staleSince > WATCHDOG_STALE_MS)) {
     const since = last === undefined ? "yet" : `for ${Math.floor((now - last) / 3_600_000)}h`;
     warnings.push(
       `⚠️ No successful job check ${since}. Check the GitHub Actions 'Poll job boards' workflow (disabled? out of minutes? bad secret?).`,
@@ -47,7 +56,7 @@ export async function runWatchdog(
   ownerId: string,
   now: number,
 ): Promise<{ sent: boolean }> {
-  const [settings, counts] = await Promise.all([store.getSettings(), store.statusCounts(utcMidnight(now))]);
+  const [settings, counts] = await Promise.all([store.getSettings(), store.healthCounts()]);
   const { warnings } = evaluateHealth({ settings, counts, now });
   if (warnings.length === 0) return { sent: false };
   if (settings.lastWarningAt !== undefined && now - settings.lastWarningAt < WATCHDOG_REWARN_MS) return { sent: false };
@@ -63,8 +72,11 @@ export async function runWatchdog(
   return { sent: true };
 }
 
-export interface StatusInput extends HealthInput {
+export interface StatusInput {
+  settings: Settings;
+  counts: StatusCounts;
   failing: CompanyRow[];
+  now: number;
 }
 
 export function formatStatus({ settings, counts, failing, now }: StatusInput): string {
@@ -73,6 +85,7 @@ export function formatStatus({ settings, counts, failing, now }: StatusInput): s
     settings.paused ? "⏸ Paused. Send /resume to get alerts again." : "▶️ Running.",
     `Last check: ${formatAgo(settings.lastPollStartAt, now)}`,
     `Last successful check: ${formatAgo(settings.lastSuccessfulPollAt, now)}`,
+    SCHEDULE_TEXT,
     "",
     `Companies: ${counts.fast} fast (every 15 min), ${counts.wide} wide (every 90 min)`,
     `Fast companies failing: ${counts.failing}`,

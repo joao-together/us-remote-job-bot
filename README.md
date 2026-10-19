@@ -6,19 +6,21 @@ It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sou
 
 | Part | Runs on | Does |
 |---|---|---|
-| Poller | GitHub Actions, started every 15 min by the Worker (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
+| Poller | GitHub Actions, started every 15 min from 08:00 to 20:00 US Eastern by the Worker (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
 | Company list | GitHub Actions, started weekly by the Worker | Adds new live boards, moves quiet boards to the wide tier (every 90 min) |
 | Bot | Cloudflare Worker | Commands, button taps, watchdog warnings, starting the two workflows |
 | Storage | Cloudflare D1 | Companies, seen jobs, invited users, per-user deliveries, settings |
 
 ## How it works
 
-- **Two tiers.** Every company is either **fast** or **wide**. Fast boards — the ones that have produced a matching role recently — are checked on every run, every 15 minutes. Wide boards (thousands of boards that rarely or never post a matching role) are split into 6 groups by id and one group is checked per run, so each is checked about **every 90 minutes**.
+- **Active hours.** Boards are checked only 12:00–24:00 UTC (08:00–20:00 US Eastern daylight time, 07:00–19:00 in winter), when US companies post. Nothing is polled overnight; roles posted then are picked up by the first run of the day. The window is `ACTIVE_HOURS_UTC` in `src/core/config.ts` (keep `POLL_CRON` and `wrangler.toml` in sync).
+- **Two tiers.** Every company is either **fast** or **wide**. Fast boards — the ones that have produced a matching role recently — are checked on every run, every 15 minutes during active hours. Wide boards (thousands of boards that rarely or never post a matching role) are split into 6 groups by id and one group is checked per run, so each is checked about **every 90 minutes** during active hours.
 - **Promotion.** The moment a wide board posts a new role that passes the match rules, you get the alert and the board becomes fast.
 - **Demotion.** Once a week, fast boards with no new matching role in 30 days (and added more than 30 days ago) become wide. Boards you `/add` start fast.
 - **Each run** (Store.listCompaniesForRun) checks: all fast boards, this 15-minute slot's wide boards, boards waiting for `/add` validation, and up to 400 newly added boards that still need their silent baseline. With ~1,100 fast and ~8,000 wide boards that is ~2,450 boards per run, about 3–5 minutes at 24 requests in flight.
-- **Schedules** come from the Worker's cron triggers (GitHub's own scheduler is unreliable): `*/15 * * * *` starts *Poll job boards*, `43 * * * *` runs the watchdog, `0 6 * * 1` (Mondays 06:00 UTC) starts *Expand company list*, `0 12 * * *` (09:00 Brazil time) sends the daily report.
-- **Free tiers.** D1 reads only the rows a run polls (one index serves every part of the selection), roughly 0.4M rows read and 10k–40k rows written per day at ~9,000 boards (limits: 5M and 100k; details in `src/core/config.ts` above `DB_BATCH_SIZE`). A public repo has unlimited Actions minutes.
+- **Schedules** come from the Worker's cron triggers (GitHub's own scheduler is unreliable): `*/15 12-23 * * *` starts *Poll job boards* (every 15 min, 12:00–23:45 UTC), `43 * * * *` runs the watchdog, `0 6 * * 1` (Mondays 06:00 UTC) starts *Expand company list*, `0 12 * * *` (09:00 Brazil time) sends the daily report. Any other (stale) cron still starts a poll inside active hours and does nothing outside them.
+- **Watchdog.** Every hour it warns if more than 25% of fast boards are failing, and — only during active hours, from 90 minutes after the window opens — if no check has succeeded for 3 hours of active time (a last success from before today's window counts from the window's start).
+- **Free tiers.** D1 reads follow what changed: the polled company rows (one index serves every part of the selection), plus `jobs` lookups only for ids a board lists that aren't already in its seen-ids list, plus repost checks only for boards with a new matching role — roughly 3k–4k rows per run, 0.2–0.3M rows read and 10k–45k rows written per day at ~9,000 boards (limits: 5M and 100k; details in `src/core/config.ts` above `DB_BATCH_SIZE`). A public repo has unlimited Actions minutes.
 
 ## Setup
 
@@ -92,7 +94,7 @@ Send `/status` to the bot — it should reply.
 
 | Command | What it does |
 |---|---|
-| `/status` | Last check, companies per tier (fast every 15 min / wide every 90 min), failing fast companies, jobs sent today |
+| `/status` | Last check, check hours, companies per tier (fast every 15 min / wide every 90 min), failing fast companies, jobs sent today |
 | `/add <link>` | Watch a company, e.g. `/add https://jobs.lever.co/acme`. Confirmed within the hour. |
 | `/remove <name>` | Stop watching a company (`/remove lever:acme` if the name is ambiguous) |
 | `/companies` | List fast-tier companies (⚠️ = failing) and how many wide-tier ones are watched |
@@ -142,7 +144,7 @@ If someone blocks the bot, the poller logs the failed send and carries on with e
 
 ## Troubleshooting
 
-- **"No successful job check for Xh"** — the Worker's hourly watchdog didn't see a poller run. Check *Actions → Poll job boards*: workflow disabled, minutes exhausted, or a wrong secret.
+- **"No successful job check for Xh"** — the Worker's hourly watchdog didn't see a successful poller run for 3 hours of active time (it is silent overnight and in the first 90 minutes of the window). Check *Actions → Poll job boards*: workflow disabled, minutes exhausted, or a wrong secret.
 - **"N of M fast-checked companies are failing"** — `/status` lists them (wide-tier boards are left out of this warning; many are small and flaky). Boards move or close; `/remove` them or re-add with the new link.
 - **Free-tier limits relied on:** GitHub Actions 2,000 min/month (private), D1 100k rows written/day, Workers 100k requests/day.
 

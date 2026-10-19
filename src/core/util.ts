@@ -1,4 +1,5 @@
 // Tiny helpers shared across the poller, worker and clients.
+import { ACTIVE_HOURS_UTC } from "./config";
 
 export const REDACTED = "[redacted]";
 
@@ -27,6 +28,24 @@ export function chunk<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Start (epoch ms) of the polling window (ACTIVE_HOURS_UTC) that contains `at`, or undefined when
+ * `at` is outside active hours.
+ */
+export function activeWindowStart(at: number, hours: { start: number; end: number } = ACTIVE_HOURS_UTC): number | undefined {
+  const d = new Date(at);
+  const midnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const start = midnight + hours.start * HOUR_MS;
+  return at >= start && at < midnight + hours.end * HOUR_MS ? start : undefined;
+}
+
+/** Whether `at` falls inside ACTIVE_HOURS_UTC. */
+export function inActiveHours(at: number): boolean {
+  return activeWindowStart(at) !== undefined;
 }
 
 /** D1 rejects `undefined` and booleans; map them to SQL-friendly values. */

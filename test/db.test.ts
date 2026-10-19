@@ -89,6 +89,48 @@ describe("jobs", () => {
     expect(known.get(empty)!.size).toBe(0);
   });
 
+  it("finds which (company, board job id) pairs are stored, any status", async () => {
+    const a = await addCompany("A", "a");
+    const b = await addCompany("B", "b");
+    const empty = await addCompany("C", "c");
+    await store.runBatch([
+      store.stmtInsertJob(job(a, "1")),
+      store.stmtInsertJob(job(a, "2", { status: "seen" })),
+      store.stmtInsertJob(job(a, "9")),
+      store.stmtInsertJob(job(b, "3", { status: "excluded" })),
+      store.stmtInsertJob(job(b, "123")),
+    ]);
+    const known = await store.storedJobIds([
+      { companyId: a, boardJobId: "1" },
+      { companyId: a, boardJobId: "2" },
+      { companyId: a, boardJobId: "3" },
+      { companyId: b, boardJobId: "3" },
+      { companyId: b, boardJobId: "1" },
+      { companyId: b, boardJobId: "123" },
+      { companyId: empty, boardJobId: "1" },
+    ]);
+    expect([...known.get(a)!].sort()).toEqual(["1", "2"]);
+    expect([...known.get(b)!].sort()).toEqual(["123", "3"]);
+    expect(known.has(empty)).toBe(false);
+    expect((await store.storedJobIds([])).size).toBe(0);
+  });
+
+  it("looks up stored job ids with one index probe per pair, not the companies' rows", async () => {
+    const c = await addCompany();
+    await store.runBatch(Array.from({ length: 300 }, (_, i) => store.stmtInsertJob(job(c, `j${i}`, { status: "seen" }))));
+    const pairs = [
+      { companyId: c, boardJobId: "j7" },
+      { companyId: c, boardJobId: "j250" },
+      { companyId: c, boardJobId: "missing" },
+    ];
+    const q = store.storedJobIdsQuery(pairs);
+    const res = await env.DB.prepare(q.sql).bind(...(q.params ?? [])).all();
+    expect(res.results).toHaveLength(2);
+    expect(res.meta.rows_read).toBeLessThanOrEqual(2 * pairs.length);
+    const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).bind(...(q.params ?? [])).all<{ detail: string }>();
+    expect(plan.results.map((r) => r.detail).join("\n")).toMatch(/SEARCH j USING COVERING INDEX sqlite_autoindex_jobs_1 \(company_id=\? AND board_job_id=\?\)/);
+  });
+
   it("lists keys of jobs that went through matching, excluding legacy seen rows", async () => {
     const a = await addCompany("A", "a");
     await store.runBatch([
@@ -119,7 +161,9 @@ describe("jobs", () => {
     const c = await addCompany();
     const stmts = Array.from({ length: 120 }, (_, i) => store.stmtInsertJob(job(c, `j${i}`, { status: "seen" })));
     await store.runBatch(stmts);
-    const known = await store.knownJobIds([c]);
+    // 1,200 pairs: two storedJobIds chunks.
+    const pairs = Array.from({ length: 1200 }, (_, i) => ({ companyId: c, boardJobId: `j${i}` }));
+    const known = await store.storedJobIds(pairs);
     expect(known.get(c)!.size).toBe(120);
   });
 });
@@ -139,6 +183,27 @@ describe("repost guard", () => {
     expect((await store.repostCandidates([c], T0 + 3600_000)).get(c)).toEqual([candidate]);
     expect((await store.repostCandidates([c], T0 + REPOST_WINDOW_MS)).get(c)).toEqual([candidate]);
     expect((await store.repostCandidates([c], T0 + REPOST_WINDOW_MS + 1)).get(c)).toBeUndefined();
+  });
+
+  it("reads repost candidates through jobs_repost_recent even for a long list of companies", async () => {
+    await env.DB.batch(
+      Array.from({ length: 90 }, (_, i) =>
+        env.DB.prepare("INSERT INTO companies (name, ats, board_token, state, created_at) VALUES (?, 'lever', ?, 'active', 0)").bind(`C${i}`, `c${i}`),
+      ),
+    );
+    const ids = (await env.DB.prepare("SELECT id FROM companies ORDER BY id").all<{ id: number }>()).results.map((r) => r.id);
+    // Many recent sent/pending jobs at other companies, which the query must not read.
+    const other = await addCompany("Other", "other");
+    await store.runBatch(Array.from({ length: 200 }, (_, i) => store.stmtInsertJob(job(other, `o${i}`))));
+    await store.runBatch([store.stmtInsertJob(job(ids[0]!, "mine"))]);
+
+    const q = store.repostCandidatesQuery(ids, T0 + 1000);
+    const res = await env.DB.prepare(q.sql).bind(...(q.params ?? [])).all();
+    expect(res.results).toHaveLength(1);
+    // About two per company probed (an index seek each), none for the other 200 recent jobs.
+    expect(res.meta.rows_read).toBeLessThanOrEqual(2 * ids.length + 5);
+    const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).bind(...(q.params ?? [])).all<{ detail: string }>();
+    expect(plan.results.map((r) => r.detail).join("\n")).toMatch(/USING INDEX jobs_repost_recent \(company_id=\? AND first_seen_at>\?\)/);
   });
 
   it("returns batched repost candidates per company", async () => {
@@ -607,5 +672,43 @@ describe("settings and status", () => {
       pendingValidation: 1,
       pending: 2,
     });
+    expect(await store.healthCounts()).toEqual({ fast: 2, failing: 1, anyActive: true });
+  });
+
+  it("counts status figures without reading every company and every sent job", async () => {
+    const insert = (n: number, tier: "fast" | "wide", failures = 0) =>
+      env.DB.batch(
+        Array.from({ length: n }, (_, i) =>
+          env.DB.prepare(
+            "INSERT INTO companies (name, ats, board_token, state, baselined, created_at, tier, consecutive_failures) VALUES (?, 'lever', ?, 'active', 1, 0, ?, ?)",
+          ).bind(`${tier}${failures}-${i}`, `${tier}${failures}-${i}`, tier, failures),
+        ),
+      );
+    await insert(40, "fast");
+    await insert(10, "fast", 3);
+    await insert(300, "wide");
+    const c = await addCompany("Jobs", "jobs");
+    await store.runBatch(Array.from({ length: 400 }, (_, i) => store.stmtInsertJob(job(c, `old${i}`))));
+    // 400 jobs sent before today, 3 today.
+    await env.DB.prepare("UPDATE jobs SET status = 'sent', sent_at = ?").bind(T0 - 48 * 3600_000).run();
+    await store.runBatch(["t1", "t2", "t3"].map((id) => store.stmtInsertJob(job(c, id))));
+    await env.DB.prepare("UPDATE jobs SET status = 'sent', sent_at = ? WHERE board_job_id LIKE 't%'").bind(T0).run();
+
+    const since = Date.UTC(2026, 9, 6);
+    expect(await store.statusCounts(since)).toMatchObject({ sentToday: 3, fast: 51, wide: 300, failing: 10, pending: 0 });
+    expect(await store.healthCounts()).toEqual({ fast: 51, failing: 10, anyActive: true });
+
+    const measure = async (q: { sql: string; params?: unknown[] }) => {
+      const res = await env.DB.prepare(q.sql).bind(...(q.params ?? [])).all();
+      const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).bind(...(q.params ?? [])).all<{ detail: string }>();
+      return { rowsRead: res.meta.rows_read, plan: plan.results.map((r) => r.detail).join("\n") };
+    };
+    const status = await measure(store.statusCountsQuery(since));
+    // Fast tier once (51) + wide tier (300) + today's sent jobs (3) + a few; not the 400 older sent jobs.
+    expect(status.rowsRead).toBeLessThanOrEqual(51 + 300 + 3 + 10);
+    expect(status.plan).toMatch(/jobs_sent_at \(sent_at>\?\)/);
+    const health = await measure(store.healthCountsQuery());
+    // The watchdog's hourly check: just the fast tier.
+    expect(health.rowsRead).toBeLessThanOrEqual(51 + 5);
   });
 });
