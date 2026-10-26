@@ -72,7 +72,7 @@ export default {
       if (controller.cron === REPORT_CRON) {
         await runDailyReports(store, telegram, env.OWNER_USER_ID, controller.scheduledTime, [env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_WEBHOOK_SECRET]);
       } else {
-        await runWatchdog(store, telegram, env.OWNER_USER_ID, Date.now());
+        await runWatchdog(store, telegram, env.OWNER_USER_ID, controller.scheduledTime);
       }
       return;
     }

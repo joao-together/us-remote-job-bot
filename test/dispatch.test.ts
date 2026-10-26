@@ -183,12 +183,13 @@ describe("scheduled()", () => {
   });
 
   it("runs the watchdog on the hourly cron, never dispatching a workflow", async () => {
-    // An active company and a poll that never succeeded: the watchdog warns via Telegram.
+    // 17:00 UTC is inside active hours; an active company and a poll that never succeeded: the watchdog warns.
+    const ACTIVE = Date.UTC(2026, 9, 12, 17, 0, 0);
     await env.DB.prepare(
       "INSERT INTO companies (name, ats, board_token, state, baselined, created_at) VALUES ('A', 'lever', 'a', 'active', 1, 0)",
     ).run();
-    await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('last_poll_start_at', ?)").bind(JSON.stringify(T - 5 * 3600_000)).run();
-    await run(WATCHDOG_CRON);
+    await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('last_poll_start_at', ?)").bind(JSON.stringify(ACTIVE - 5 * 3600_000)).run();
+    await run(WATCHDOG_CRON, ACTIVE);
     expect(urls).toHaveLength(1);
     expect(urls[0]).toMatch(/^https:\/\/api\.telegram\.org\/bot[^/]+\/sendMessage$/);
   });

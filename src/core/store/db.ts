@@ -1,6 +1,6 @@
 import type { AtsKind } from "../ats/types";
 import { BASELINE_COMPANIES_PER_RUN, FAILING_AFTER_CONSECUTIVE, REPOST_WINDOW_MS, WIDE_SLOTS } from "../config";
-import type { LocationClass } from "../match/rules";
+import { COUNTRIES, isCountry, type Country, type LocationClass } from "../match/rules";
 import type { DbDriver, Statement } from "./driver";
 import { chunk } from "../util";
 
@@ -47,8 +47,10 @@ export interface JobRow {
   locationClass: LocationClass | null;
   /** Why the location was flagged, recorded at detection; null for plain US jobs. */
   locationReason: string | null;
-  /** A US/US-restricted job whose posting also lists a remote-Mexico location (see encodeLocationClass). */
-  locationAlsoMexico: boolean;
+  /** Countries the posting is remote in, in COUNTRIES order (see encodeLocationClass). */
+  locationCountries: Country[];
+  /** A remote location is LATAM-wide (names no country). */
+  locationLatam: boolean;
   applyUrl: string;
   postedAt: number | null;
   salaryText: string | null;
@@ -158,7 +160,9 @@ export interface NewJob {
   locationText: string;
   locationClass?: LocationClass | null;
   locationReason?: string | null;
-  locationAlsoMexico?: boolean;
+  /** See LocationResult.countries; "US" is implied by the class and not stored. */
+  locationCountries?: readonly Country[];
+  locationLatam?: boolean;
   applyUrl: string;
   postedAt?: number | null;
   salaryText?: string | null;
@@ -241,22 +245,74 @@ function toCompany(r: Raw): CompanyRow {
 }
 
 /**
- * jobs.location_class is free TEXT, so alsoMexico is stored in it as a "+mx" suffix ("us+mx",
- * "us_restricted+mx") instead of needing a new column. Only toJob and the job statements read or
- * write the column, and rows without the suffix decode exactly as before.
+ * jobs.location_class is free TEXT, so a job's countries are stored in it as tags after the class,
+ * instead of needing a new column: "<class>[+mx][+co][+ar][+latam]", tags in that order, e.g.
+ * "us+mx", "us_restricted+co+ar", "intl+co", "intl+mx+ar+latam", "intl+latam". US is implied by
+ * the class (us, us_restricted and ambiguous) and never stored as a tag. An intl job open to
+ * Mexico only is written "mx", the spelling used before Colombia and Argentina existed, so old
+ * and new rows match. Rows from before this scheme decode unchanged: "mx" -> intl {MX}, "us+mx"
+ * -> us {US, MX}. Unknown tags are ignored.
  */
-const ALSO_MEXICO_SUFFIX = "+mx";
+const COUNTRY_TAGS: readonly (readonly [Country, string])[] = [["MX", "mx"], ["CO", "co"], ["AR", "ar"]];
+const LATAM_TAG = "latam";
+const LEGACY_MX = "mx";
+const US_CLASSES: ReadonlySet<string> = new Set(["us", "us_restricted", "ambiguous"]);
+/** The reason stored on LATAM jobs (class "mx") before the country model: decoded as LATAM-wide. */
+const LEGACY_LATAM_REASON = "LATAM — check Mexico is eligible";
 
-export function encodeLocationClass(cls: LocationClass | null | undefined, alsoMexico?: boolean): string | null {
-  if (!cls) return null;
-  return alsoMexico && (cls === "us" || cls === "us_restricted") ? cls + ALSO_MEXICO_SUFFIX : cls;
+export interface DecodedLocation {
+  locationClass: LocationClass | null;
+  locationCountries: Country[];
+  locationLatam: boolean;
 }
 
-export function decodeLocationClass(stored: string | null): { locationClass: LocationClass | null; locationAlsoMexico: boolean } {
-  if (stored?.endsWith(ALSO_MEXICO_SUFFIX)) {
-    return { locationClass: stored.slice(0, -ALSO_MEXICO_SUFFIX.length) as LocationClass, locationAlsoMexico: true };
+export function encodeLocationClass(
+  cls: LocationClass | null | undefined,
+  countries: readonly Country[] = [],
+  latam = false,
+): string | null {
+  if (!cls) return null;
+  const tags = COUNTRY_TAGS.filter(([c]) => countries.includes(c)).map(([, tag]) => tag);
+  if (latam) tags.push(LATAM_TAG);
+  if (cls === "intl" && tags.length === 1 && tags[0] === "mx") return LEGACY_MX;
+  return [cls, ...tags].join("+");
+}
+
+export function decodeLocationClass(stored: string | null): DecodedLocation {
+  if (stored === null || stored === "") return { locationClass: null, locationCountries: [], locationLatam: false };
+  const [head = "", ...tags] = stored.split("+");
+  const cls = (head === LEGACY_MX ? "intl" : head) as LocationClass;
+  const set = new Set<Country>();
+  if (US_CLASSES.has(cls)) set.add("US");
+  if (head === LEGACY_MX) set.add("MX");
+  let latam = false;
+  for (const tag of tags) {
+    const country = COUNTRY_TAGS.find(([, t]) => t === tag)?.[0];
+    if (country) set.add(country);
+    else if (tag === LATAM_TAG) latam = true;
   }
-  return { locationClass: stored as LocationClass | null, locationAlsoMexico: false };
+  return { locationClass: cls, locationCountries: COUNTRIES.filter((c) => set.has(c)), locationLatam: latam };
+}
+
+/** decodeLocationClass, plus: an old LATAM job (stored as "mx" with the old LATAM reason) is LATAM-wide. */
+function decodeJobLocation(stored: string | null, reason: string | null): DecodedLocation {
+  const decoded = decodeLocationClass(stored);
+  if (stored === LEGACY_MX && reason === LEGACY_LATAM_REASON) return { ...decoded, locationCountries: [], locationLatam: true };
+  return decoded;
+}
+
+/** Parses user_prefs.countries ("US,CO"); null when it names no known country. */
+export function parseCountries(v: unknown): Country[] | null {
+  if (typeof v !== "string") return null;
+  const set = new Set(v.split(",").map((c) => c.trim().toUpperCase()));
+  const out = COUNTRIES.filter((c) => set.has(c));
+  return out.length > 0 ? out : null;
+}
+
+/** A recipient and the countries they get alerts for (all four unless they changed it). */
+export interface Recipient {
+  userId: string;
+  countries: Country[];
 }
 
 function toJob(r: Raw): JobRow {
@@ -267,7 +323,7 @@ function toJob(r: Raw): JobRow {
     title: String(r.title),
     normalizedTitle: String(r.normalized_title),
     locationText: String(r.location_text ?? ""),
-    ...decodeLocationClass(strOrNull(r.location_class)),
+    ...decodeJobLocation(strOrNull(r.location_class), strOrNull(r.location_reason)),
     locationReason: strOrNull(r.location_reason),
     applyUrl: String(r.apply_url),
     postedAt: numOrNull(r.posted_at),
@@ -615,7 +671,7 @@ export class Store {
         job.title,
         job.normalizedTitle,
         job.locationText,
-        encodeLocationClass(job.locationClass, job.locationAlsoMexico),
+        encodeLocationClass(job.locationClass, job.locationCountries, job.locationLatam),
         job.locationReason ?? null,
         job.applyUrl,
         job.postedAt ?? null,
@@ -640,7 +696,7 @@ export class Store {
         job.title,
         job.normalizedTitle,
         job.locationText,
-        encodeLocationClass(job.locationClass, job.locationAlsoMexico),
+        encodeLocationClass(job.locationClass, job.locationCountries, job.locationLatam),
         job.locationReason ?? null,
         job.applyUrl,
         job.postedAt ?? null,
@@ -973,6 +1029,50 @@ export class Store {
       params: [ownerId],
     });
     return [ownerId, ...rows.map((r) => String(r.user_id))];
+  }
+
+  /**
+   * listRecipients with each recipient's countries, in one query: the owner first, then active
+   * invited users in invite order. Reads the (small) users table plus one user_prefs primary-key
+   * lookup per recipient: a few rows per user, never the jobs table. Called once per delivery run.
+   */
+  async listRecipientsWithCountries(ownerId: string): Promise<Recipient[]> {
+    const rows = await this.driver.query<{ user_id: string; countries: string | null }>(this.recipientsQuery(ownerId));
+    return rows.map((r) => ({ userId: String(r.user_id), countries: parseCountries(r.countries) ?? [...COUNTRIES] }));
+  }
+
+  /** The statement behind listRecipientsWithCountries (exposed for tests that measure rows read). */
+  recipientsQuery(ownerId: string): Statement {
+    return {
+      sql: `SELECT user_id, countries FROM (
+          SELECT ? AS user_id, (SELECT countries FROM user_prefs WHERE user_id = ?) AS countries, 0 AS ord, 0 AS added_at
+          UNION ALL
+          SELECT u.user_id, p.countries, 1 AS ord, u.added_at FROM users u LEFT JOIN user_prefs p ON p.user_id = u.user_id
+            WHERE u.active = 1 AND u.user_id <> ?
+        ) ORDER BY ord, added_at, user_id`,
+      params: [ownerId, ownerId, ownerId],
+    };
+  }
+
+  /** The countries `userId` gets alerts for; all four when they never changed it. */
+  async getUserCountries(userId: string): Promise<Country[]> {
+    const rows = await this.driver.query<{ countries: string }>({
+      sql: "SELECT countries FROM user_prefs WHERE user_id = ?",
+      params: [userId],
+    });
+    return parseCountries(rows[0]?.countries) ?? [...COUNTRIES];
+  }
+
+  /** Stores `userId`'s countries (unknown codes dropped, COUNTRIES order). Throws when none is left. */
+  async setUserCountries(userId: string, countries: readonly string[]): Promise<Country[]> {
+    const list = COUNTRIES.filter((c) => countries.some((x) => isCountry(x) && x === c));
+    if (list.length === 0) throw new Error("at least one country is required");
+    await this.driver.query({
+      sql: `INSERT INTO user_prefs (user_id, countries) VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET countries = excluded.countries`,
+      params: [userId, list.join(",")],
+    });
+    return list;
   }
 
   async getUser(userId: string): Promise<UserRow | null> {

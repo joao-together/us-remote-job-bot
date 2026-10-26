@@ -19,7 +19,7 @@ let tg: ReturnType<typeof fakeTelegram>;
 let clock = T0;
 
 function fakeTelegram() {
-  const sent: { chatId: number | string; html: string }[] = [];
+  const sent: { chatId: number | string; html: string; markup?: InlineKeyboardMarkup }[] = [];
   const answers: { id: string; text?: string }[] = [];
   const edits: { chatId: number | string; messageId: number; markup: InlineKeyboardMarkup }[] = [];
   /** Sends to these chat ids (as strings) throw the given error. */
@@ -29,10 +29,10 @@ function fakeTelegram() {
     answers,
     edits,
     failFor,
-    async sendMessage(chatId: number | string, html: string) {
+    async sendMessage(chatId: number | string, html: string, markup?: InlineKeyboardMarkup) {
       const err = failFor.get(String(chatId));
       if (err) throw err;
-      sent.push({ chatId, html });
+      sent.push(markup ? { chatId, html, markup } : { chatId, html });
       return { messageId: sent.length };
     },
     async answerCallbackQuery(id: string, text?: string) {
@@ -123,6 +123,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM deliveries"),
     env.DB.prepare("DELETE FROM users"),
     env.DB.prepare("DELETE FROM access_requests"),
+    env.DB.prepare("DELETE FROM user_prefs"),
     env.DB.prepare("DELETE FROM jobs"),
     env.DB.prepare("DELETE FROM companies"),
     env.DB.prepare("DELETE FROM settings"),
@@ -672,5 +673,78 @@ describe("/report", () => {
     await send("/report", { from: STRANGER });
     expect(tg.sent.some((m) => m.html.includes("Daily report"))).toBe(false);
     expect(tg.sent.find((m) => m.chatId === STRANGER)?.html).toContain("This bot is private");
+  });
+});
+
+describe("/countries", () => {
+  const checked = (markup: InlineKeyboardMarkup | undefined) =>
+    (markup?.inline_keyboard ?? []).flat().filter((b) => b.text.startsWith("✅")).map((b) => b.callback_data);
+  const tap = (data: string, from = OWNER) => handleUpdate(callback(data, { from }), deps());
+
+  beforeEach(async () => {
+    await store.inviteUser(String(MEMBER));
+  });
+
+  it("shows all four countries selected by default, for the owner and members", async () => {
+    for (const from of [OWNER, MEMBER]) {
+      await send("/countries", { from });
+      const last = tg.sent.at(-1)!;
+      expect(last.chatId).toBe(from);
+      expect(last.html).toContain("Countries for your alerts");
+      expect(checked(last.markup)).toEqual(["c:US", "c:MX", "c:CO", "c:AR"]);
+      expect(last.markup!.inline_keyboard.flat().map((b) => b.text)).toEqual([
+        "✅ 🇺🇸 United States",
+        "✅ 🇲🇽 Mexico",
+        "✅ 🇨🇴 Colombia",
+        "✅ 🇦🇷 Argentina",
+      ]);
+    }
+  });
+
+  it("toggles a country off and on, editing the keyboard in place", async () => {
+    await tap("c:MX", MEMBER);
+    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "CO", "AR"]);
+    expect(tg.answers.at(-1)).toEqual({ id: "cb1", text: "🇲🇽 Mexico off" });
+    expect(tg.edits.at(-1)).toMatchObject({ chatId: MEMBER, messageId: 77 });
+    expect(checked(tg.edits.at(-1)!.markup)).toEqual(["c:US", "c:CO", "c:AR"]);
+
+    await tap("c:MX", MEMBER);
+    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "MX", "CO", "AR"]);
+    expect(tg.answers.at(-1)?.text).toBe("🇲🇽 Mexico on");
+    // Each user's selection is their own.
+    await tap("c:US");
+    expect(await store.getUserCountries(String(OWNER))).toEqual(["MX", "CO", "AR"]);
+    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "MX", "CO", "AR"]);
+    await send("/countries", { from: MEMBER });
+    expect(checked(tg.sent.at(-1)!.markup)).toEqual(["c:US", "c:MX", "c:CO", "c:AR"]);
+  });
+
+  it("refuses to deselect the last country", async () => {
+    for (const c of ["US", "MX", "CO"]) await tap(`c:${c}`);
+    expect(await store.getUserCountries(String(OWNER))).toEqual(["AR"]);
+    const edits = tg.edits.length;
+    await tap("c:AR");
+    expect(tg.answers.at(-1)?.text).toBe("Keep at least one country selected");
+    expect(tg.edits).toHaveLength(edits);
+    expect(await store.getUserCountries(String(OWNER))).toEqual(["AR"]);
+  });
+
+  it("ignores country buttons from unknown users and rejects unknown codes", async () => {
+    await tap("c:US", STRANGER);
+    expect(tg.answers).toEqual([]);
+    expect(await store.getUserCountries(String(STRANGER))).toEqual(["US", "MX", "CO", "AR"]);
+    await tap("c:BR");
+    expect(tg.answers.at(-1)?.text).toBe("Unknown button");
+  });
+
+  it("is listed in both help texts", async () => {
+    expect(await send("/help")).toContain("/countries");
+    expect(await send("/help", { from: MEMBER })).toContain("/countries");
+  });
+
+  it("shows the requester's countries in /status", async () => {
+    expect(await send("/status")).toContain("Your countries: 🇺🇸 🇲🇽 🇨🇴 🇦🇷 (change with /countries)");
+    await store.setUserCountries(String(MEMBER), ["US", "CO"]);
+    expect(await send("/status", { from: MEMBER })).toContain("Your countries: 🇺🇸 🇨🇴 (change with /countries)");
   });
 });

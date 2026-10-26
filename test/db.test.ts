@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { REPOST_WINDOW_MS, WIDE_SLOTS } from "../src/core/config";
-import { Store, parseSeenIds, type NewJob, type PollStats } from "../src/core/store/db";
+import { Store, decodeLocationClass, encodeLocationClass, parseCountries, parseSeenIds, type NewJob, type PollStats } from "../src/core/store/db";
 import { bindingDriver } from "../src/core/store/driver-binding";
 
 const T0 = Date.UTC(2026, 9, 6, 12, 0, 0);
@@ -14,6 +14,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM deliveries"),
     env.DB.prepare("DELETE FROM users"),
     env.DB.prepare("DELETE FROM access_requests"),
+    env.DB.prepare("DELETE FROM user_prefs"),
     env.DB.prepare("DELETE FROM jobs"), env.DB.prepare("DELETE FROM companies"), env.DB.prepare("DELETE FROM settings")]);
   clock = T0;
   store = new Store(bindingDriver(env.DB), () => clock);
@@ -60,22 +61,58 @@ describe("jobs", () => {
     ]);
     const [restricted, us] = await store.listPending();
     expect(restricted).toMatchObject({ locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY" });
-    expect(us).toMatchObject({ locationClass: "us", locationReason: null, locationAlsoMexico: false });
+    expect(us).toMatchObject({ locationClass: "us", locationReason: null, locationCountries: ["US"], locationLatam: false });
   });
 
-  it("round-trips alsoMexico as a '+mx' suffix on the stored class, only for US classes", async () => {
+  it("round-trips countries as tags on the stored class; MX-only intl keeps the old 'mx' spelling", async () => {
     const c = await addCompany();
     await store.runBatch([
-      store.stmtInsertJob(job(c, "a", { locationAlsoMexico: true })),
-      store.stmtInsertJob(job(c, "b", { locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY", locationAlsoMexico: true })),
-      store.stmtInsertJob(job(c, "c", { locationClass: "mx", locationAlsoMexico: true })),
+      store.stmtInsertJob(job(c, "a", { locationCountries: ["US", "MX"] })),
+      store.stmtInsertJob(job(c, "b", { locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY", locationCountries: ["US", "CO", "AR"] })),
+      store.stmtInsertJob(job(c, "c", { locationClass: "intl", locationCountries: ["MX"] })),
+      store.stmtInsertJob(job(c, "d", { locationClass: "intl", locationCountries: ["CO"] })),
+      store.stmtInsertJob(job(c, "e", { locationClass: "intl", locationCountries: ["AR", "MX"], locationLatam: true })),
+      store.stmtInsertJob(job(c, "f", { locationClass: "intl", locationCountries: [], locationLatam: true, locationReason: "LATAM — check your country is eligible" })),
+      store.stmtInsertJob(job(c, "g", { locationClass: "ambiguous", locationCountries: ["US"] })),
     ]);
     const stored = await env.DB.prepare("SELECT location_class FROM jobs ORDER BY id").all();
-    expect(stored.results.map((r) => r.location_class)).toEqual(["us+mx", "us_restricted+mx", "mx"]);
-    const [a, b, mx] = await store.listPending();
-    expect(a).toMatchObject({ locationClass: "us", locationAlsoMexico: true });
-    expect(b).toMatchObject({ locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY", locationAlsoMexico: true });
-    expect(mx).toMatchObject({ locationClass: "mx", locationAlsoMexico: false });
+    expect(stored.results.map((r) => r.location_class)).toEqual([
+      "us+mx", "us_restricted+co+ar", "mx", "intl+co", "intl+mx+ar+latam", "intl+latam", "ambiguous",
+    ]);
+    const rows = await store.listPending();
+    expect(rows.map((r) => [r.locationClass, r.locationCountries, r.locationLatam])).toEqual([
+      ["us", ["US", "MX"], false],
+      ["us_restricted", ["US", "CO", "AR"], false],
+      ["intl", ["MX"], false],
+      ["intl", ["CO"], false],
+      ["intl", ["MX", "AR"], true],
+      ["intl", [], true],
+      ["ambiguous", ["US"], false],
+    ]);
+  });
+
+  it("decodes values stored before the country model unchanged", () => {
+    expect(decodeLocationClass("us")).toEqual({ locationClass: "us", locationCountries: ["US"], locationLatam: false });
+    expect(decodeLocationClass("us_restricted")).toEqual({ locationClass: "us_restricted", locationCountries: ["US"], locationLatam: false });
+    expect(decodeLocationClass("ambiguous")).toEqual({ locationClass: "ambiguous", locationCountries: ["US"], locationLatam: false });
+    expect(decodeLocationClass("mx")).toEqual({ locationClass: "intl", locationCountries: ["MX"], locationLatam: false });
+    expect(decodeLocationClass("us+mx")).toEqual({ locationClass: "us", locationCountries: ["US", "MX"], locationLatam: false });
+    expect(decodeLocationClass("us_restricted+mx")).toEqual({ locationClass: "us_restricted", locationCountries: ["US", "MX"], locationLatam: false });
+    expect(decodeLocationClass(null)).toEqual({ locationClass: null, locationCountries: [], locationLatam: false });
+    expect(decodeLocationClass("us+zz")).toEqual({ locationClass: "us", locationCountries: ["US"], locationLatam: false });
+    expect(encodeLocationClass("intl", ["MX"])).toBe("mx");
+    expect(encodeLocationClass("us", ["US"])).toBe("us");
+    expect(encodeLocationClass(null, ["MX"])).toBeNull();
+  });
+
+  it("reads an old LATAM row (class 'mx' with the old LATAM reason) as LATAM-wide", async () => {
+    const c = await addCompany();
+    await env.DB.prepare(
+      `INSERT INTO jobs (company_id, board_job_id, title, normalized_title, location_text, location_class, location_reason, apply_url, status, first_seen_at)
+       VALUES (?, 'old', 'Senior Software Engineer', 'senior software engineer', 'Remote - LATAM', 'mx', 'LATAM — check Mexico is eligible', 'https://x', 'pending', ?)`,
+    ).bind(c, clock).run();
+    const [row] = await store.listPending();
+    expect(row).toMatchObject({ locationClass: "intl", locationCountries: [], locationLatam: true });
   });
 
   it("loads known job ids per company", async () => {
@@ -398,6 +435,61 @@ describe("users", () => {
     expect(await store.inviteUser("500", T0 + 4)).toMatchObject({ status: "reactivated", user: { active: true, name: "Jane (@jane)", addedAt: T0 + 4 } });
     expect(await store.inviteUser("600", T0 + 5)).toMatchObject({ status: "added", user: { name: null } });
     expect((await store.listUsers()).map((u) => u.userId)).toEqual(["500", "600"]);
+  });
+});
+
+describe("country preferences", () => {
+  const ALL = ["US", "MX", "CO", "AR"];
+
+  it("defaults everyone, the owner included, to all four countries", async () => {
+    expect(await store.getUserCountries("1001")).toEqual(ALL);
+    expect(await store.getUserCountries("300")).toEqual(ALL);
+  });
+
+  it("stores a selection in COUNTRIES order, drops unknown codes and refuses an empty one", async () => {
+    expect(await store.setUserCountries("300", ["AR", "US", "BR"])).toEqual(["US", "AR"]);
+    expect(await store.getUserCountries("300")).toEqual(["US", "AR"]);
+    expect(await store.setUserCountries("300", ["CO"])).toEqual(["CO"]);
+    expect(await store.getUserCountries("300")).toEqual(["CO"]);
+    await expect(store.setUserCountries("300", ["BR"])).rejects.toThrow();
+    expect(await store.getUserCountries("300")).toEqual(["CO"]);
+    const raw = await env.DB.prepare("SELECT countries FROM user_prefs WHERE user_id = '300'").first();
+    expect(raw).toEqual({ countries: "CO" });
+  });
+
+  it("treats a malformed stored selection as all four", async () => {
+    await env.DB.prepare("INSERT INTO user_prefs (user_id, countries) VALUES ('300', 'xx,')").run();
+    expect(await store.getUserCountries("300")).toEqual(ALL);
+    expect(parseCountries("us, co")).toEqual(["US", "CO"]);
+    expect(parseCountries("")).toBeNull();
+  });
+
+  it("lists recipients with their countries in one query, owner first, reading a few rows per user", async () => {
+    clock = T0 + 1;
+    await store.inviteUser("300");
+    clock = T0 + 2;
+    await store.inviteUser("200");
+    await store.inviteUser("400");
+    await store.revokeUser("400");
+    await store.setUserCountries("1001", ["CO"]);
+    await store.setUserCountries("200", ["US", "MX"]);
+    await store.setUserCountries("400", ["AR"]);
+    expect(await store.listRecipientsWithCountries("1001")).toEqual([
+      { userId: "1001", countries: ["CO"] },
+      { userId: "300", countries: ALL },
+      { userId: "200", countries: ["US", "MX"] },
+    ]);
+
+    // 50 more members, half with a selection: still a few rows read per user.
+    for (let i = 0; i < 50; i++) {
+      await store.inviteUser(String(5000 + i));
+      if (i % 2 === 0) await store.setUserCountries(String(5000 + i), ["US"]);
+    }
+    const q = store.recipientsQuery("1001");
+    const res = await env.DB.prepare(q.sql).bind(...(q.params ?? [])).all();
+    expect(res.results).toHaveLength(53);
+    // Bounded by the (small) users table: a few rows per user, never the jobs table.
+    expect(res.meta.rows_read).toBeLessThanOrEqual(3 * 54);
   });
 });
 

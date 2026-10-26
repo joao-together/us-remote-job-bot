@@ -94,7 +94,7 @@ Send `/status` to the bot — it should reply.
 
 | Command | What it does |
 |---|---|
-| `/status` | Last check, check hours, companies per tier (fast every 15 min / wide every 90 min), failing fast companies, jobs sent today |
+| `/status` | Last check, check hours, companies per tier (fast every 15 min / wide every 90 min), failing fast companies, jobs sent today, and your countries |
 | `/add <link>` | Watch a company, e.g. `/add https://jobs.lever.co/acme`. Confirmed within the hour. |
 | `/remove <name>` | Stop watching a company (`/remove lever:acme` if the name is ambiguous) |
 | `/companies` | List fast-tier companies (⚠️ = failing) and how many wide-tier ones are watched |
@@ -103,15 +103,28 @@ Send `/status` to the bot — it should reply.
 | `/pause` / `/resume` | Stop/start alerts. Jobs found while paused are never sent later. |
 | `/applied` | Your last 20 jobs marked ✅ Applied |
 | `/report` | Your daily report for today so far (Brazil time) |
+| `/countries` | Choose which countries you get alerts for: tap 🇺🇸 United States, 🇲🇽 Mexico, 🇨🇴 Colombia, 🇦🇷 Argentina to turn each on (✅) or off (⬜). All four are on by default. |
 | `/invite <id>` / `/revoke <id>` / `/users` | Give someone the alerts, take them away, list who has them (see below) |
 
 **Daily report:** every day at 09:00 Brazil time (12:00 UTC; Brazil is UTC-3 all year) the owner and every invited user get their own report for the previous Brazil day: jobs applied (with links, up to 25), skipped and alerts received that day, plus applied this week (since Monday 00:00 Brazil time) and all time. It is sent even on a day with no activity. `/report` shows the same for today so far.
 
 Each alert shows the title, company, location, salary (when the board lists it), how long ago it was posted, and the apply link (tap to open, long-press to copy). A ⚠️ under the location means the posting doesn't clearly say US (e.g. just "Remote") or is limited to some states — check before applying.
 
-**Mexico-remote alerts:** remote roles that name Mexico explicitly ("Remote - Mexico", "Remote, MX" or country code MX, "CDMX - Remote", Mexico City, Guadalajara, Monterrey, Querétaro, Puebla, Tijuana, Mérida, León, Jalisco, Nuevo León) are sent too, with a **🇲🇽 MEXICO REMOTE** banner as the first line. Remote LATAM / Latin America roles get the same banner plus "⚠️ LATAM — check Mexico is eligible". A Mexico location without any remote signal is treated as an office job and skipped, and "New Mexico" is the US state, not Mexico. When a posting lists both a US-remote and a Mexico-remote location, it is sent as a normal US alert with an extra "🇲🇽 Also open to Mexico" line. When a posting lists several locations, the best one wins: US, then US-restricted, then Mexico, then ambiguous.
+**Countries.** Alerts cover remote roles open to four countries: 🇺🇸 United States, 🇲🇽 Mexico, 🇨🇴 Colombia and 🇦🇷 Argentina.
 
-**What counts as a match:** remote, US-eligible (or flagged ambiguous) or Mexico-remote engineering roles at any level except junior/entry.
+- **United States:** as above; a plain "Remote" with no country is treated as possibly-US and flagged ⚠️.
+- **Mexico:** "Mexico"/"México", "MX" (as an upper-case token or country code), CDMX / Mexico City, Guadalajara, Monterrey, Querétaro, Puebla, Tijuana, Mérida, León, Jalisco, Nuevo León. "New Mexico" is the US state.
+- **Colombia:** "Colombia", country code CO from the board's country field, Bogotá, Medellín, Cali, Barranquilla, Cartagena. A bare "CO" in the location text is **Colorado** ("Denver, CO", "Remote - US (CO)").
+- **Argentina:** "Argentina", country code AR from the board's country field, Buenos Aires, CABA, Rosario, Mendoza, and Córdoba (unless another country such as Spain or a US place is named). A bare "AR" is **Arkansas** ("Little Rock, AR", "Remote, AR") unless the location is otherwise outside the US ("Remote - LATAM (BR, AR)", "Buenos Aires, AR").
+- **LATAM:** "LATAM", "Latin America", "Latinoamérica" without a named country counts as open to Mexico, Colombia and Argentina.
+
+Matching ignores accents ("Bogota" = "Bogotá"). A Mexico/Colombia/Argentina location without any remote signal is treated as an office job and skipped. When a posting lists several locations, the best one sets the alert type (US, then US-restricted, then Mexico/Colombia/Argentina/LATAM, then ambiguous), and every remote location adds its country.
+
+**Banners.** US alerts have no banner. Other alerts start with one: **🇲🇽 MEXICO REMOTE**, **🇨🇴 COLOMBIA REMOTE**, **🇦🇷 ARGENTINA REMOTE**, combined for several countries (**🇲🇽🇨🇴 MEXICO · COLOMBIA REMOTE**), or **🌎 LATAM REMOTE** plus "⚠️ LATAM — check your country is eligible" for LATAM-wide roles. A US alert that also lists other remote countries adds a line like "Also open to: 🇲🇽 Mexico, 🇨🇴 Colombia" (or "🌎 LATAM"). The alert text is the same for every recipient.
+
+**Who gets what.** Each person (the owner included) picks their countries with `/countries`; with no choice made, all four are on, and at least one must stay on. An alert goes to everyone whose countries include one the role is open to (LATAM-wide roles go to anyone with Mexico, Colombia or Argentina on). A role that matches nobody's countries is marked handled without sending anything (stored as sent, with no message and no delivery rows) and is never sent later, even if someone turns that country on afterwards.
+
+**What counts as a match:** remote, US-eligible (or flagged ambiguous) or Mexico/Colombia/Argentina/LATAM-remote engineering roles at any level except junior/entry.
 
 - **Roles:** software engineering (backend, frontend, full stack, mobile, product, language-named titles) plus adjacent engineering: DevOps, SRE / Site Reliability, Platform, Infrastructure, Cloud, Systems (only with a software context, e.g. "Software Systems Engineer", "Distributed Systems Engineer"), Data / Analytics Engineer, ML / AI / MLOps / Applied ML Engineer, Security Engineer (application, cloud, product), Developer Productivity, Build / Release Engineer.
 - **Levels:** Senior / Sr. / Snr, Staff, Senior Staff, Principal, Distinguished, Lead / Tech Lead, mid-level markers (II, III, IV, 2, 3, L3, Mid) and unleveled titles ("Software Engineer", "Backend Engineer").
@@ -136,9 +149,9 @@ The bot is private: only you (`OWNER_USER_ID`) and people you invite can use it,
 
 What invited people get:
 
-- **The same job alerts as you**, each with its own ✅ Applied / ❌ Skip buttons. Their taps and their `/applied` list are their own and never change yours.
-- `/start`, `/help`, `/status`, `/applied` and `/report`, plus their own daily report. Everything else — `/add`, `/remove`, `/companies`, `/exclude`, `/pause`, `/resume`, `/invite`, `/revoke`, `/users` — is owner-only and answers *"Only the owner can do that."*
-- Settings are global: `/pause` and excluded words apply to everyone. Watchdog warnings and `/add` confirmations go to you only.
+- **The same job alerts as you** (for the countries they pick with `/countries`; all four by default), each with its own ✅ Applied / ❌ Skip buttons. Their taps and their `/applied` list are their own and never change yours.
+- `/start`, `/help`, `/status`, `/applied`, `/report` and `/countries` (their own country choice), plus their own daily report. Everything else — `/add`, `/remove`, `/companies`, `/exclude`, `/pause`, `/resume`, `/invite`, `/revoke`, `/users` — is owner-only and answers *"Only the owner can do that."*
+- Settings are global except countries: `/pause` and excluded words apply to everyone. Watchdog warnings and `/add` confirmations go to you only.
 
 If someone blocks the bot, the poller logs the failed send and carries on with everyone else.
 

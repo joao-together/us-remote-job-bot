@@ -1,8 +1,8 @@
 import { POSTED_AGO_MAX_MS } from "../config";
-import type { LocationClass } from "../match/rules";
+import { COUNTRIES, type Country, type LocationClass } from "../match/rules";
 
 /** The location classes that can reach an alert (the others fail matching). */
-export type AlertLocationClass = Extract<LocationClass, "us" | "us_restricted" | "mx" | "ambiguous">;
+export type AlertLocationClass = Extract<LocationClass, "us" | "us_restricted" | "intl" | "ambiguous">;
 export type JobAction = "applied" | "skipped";
 
 export interface JobAlert {
@@ -11,8 +11,10 @@ export interface JobAlert {
   locationText: string;
   locationClass: AlertLocationClass;
   locationReason?: string;
-  /** A US alert whose posting also lists a remote-Mexico location. */
-  alsoMexico?: boolean;
+  /** Countries the posting is remote in (see LocationResult.countries). */
+  countries?: readonly Country[];
+  /** A remote location is LATAM-wide (names no country). */
+  latam?: boolean;
   salaryText?: string;
   postedAt?: number;
   applyUrl: string;
@@ -57,21 +59,48 @@ export function formatPostedAgo(postedAt: number | undefined, now: number): stri
   return `${Math.floor(hours / 24)}d`;
 }
 
+export const COUNTRY_INFO: Record<Country, { flag: string; name: string }> = {
+  US: { flag: "🇺🇸", name: "United States" },
+  MX: { flag: "🇲🇽", name: "Mexico" },
+  CO: { flag: "🇨🇴", name: "Colombia" },
+  AR: { flag: "🇦🇷", name: "Argentina" },
+};
+
+const LATAM_WARNING = "LATAM — check your country is eligible";
+
+/** "🇲🇽 Mexico" */
+export function countryLabel(c: Country): string {
+  return `${COUNTRY_INFO[c].flag} ${COUNTRY_INFO[c].name}`;
+}
+
+/**
+ * The first line of a non-US alert: "🇲🇽 <b>MEXICO REMOTE</b>", "🇲🇽🇨🇴 <b>MEXICO · COLOMBIA
+ * REMOTE</b>", or "🌎 <b>LATAM REMOTE</b>" when no country is named.
+ */
+function intlBanner(abroad: readonly Country[]): string {
+  if (abroad.length === 0) return "🌎 <b>LATAM REMOTE</b>";
+  const flags = abroad.map((c) => COUNTRY_INFO[c].flag).join("");
+  return `${flags} <b>${abroad.map((c) => COUNTRY_INFO[c].name.toUpperCase()).join(" · ")} REMOTE</b>`;
+}
+
 export function formatJobAlert(job: JobAlert, now: number): string {
-  const mx = job.locationClass === "mx";
-  const lines = mx ? ["🇲🇽 <b>MEXICO REMOTE</b>"] : [];
+  const intl = job.locationClass === "intl";
+  const abroad = COUNTRIES.filter((c) => c !== "US" && job.countries?.includes(c));
+  const lines = intl ? [intlBanner(abroad)] : [];
   lines.push(`<b>${field(job.title, MAX_TITLE)}</b>`, `🏢 ${field(job.companyName, MAX_FIELD)}`);
 
   lines.push(`📍 ${field(job.locationText, MAX_FIELD)}`);
   const reason = job.locationReason?.trim();
-  if (mx) {
+  if (intl) {
     if (reason) lines.push(`⚠️ ${field(reason, MAX_REASON)}`);
+    else if (abroad.length === 0) lines.push(`⚠️ ${LATAM_WARNING}`);
   } else if (job.locationClass !== "us") {
     lines.push(`⚠️ ${field(reason || "Check location eligibility", MAX_REASON)}`);
   }
-  if (job.alsoMexico && (job.locationClass === "us" || job.locationClass === "us_restricted")) {
-    lines.push("🇲🇽 Also open to Mexico");
-  }
+  // Other places the posting is open to: named countries on a US alert, LATAM next to a country.
+  const also = intl ? [] : abroad.map(countryLabel);
+  if (job.latam && (!intl || abroad.length > 0)) also.push("🌎 LATAM");
+  if (also.length > 0) lines.push(`Also open to: ${also.join(", ")}`);
 
   if (job.salaryText?.trim()) lines.push(`💰 ${field(job.salaryText, MAX_FIELD)}`);
 
@@ -117,4 +146,21 @@ export function parseCallbackData(data: string): { action: JobAction; jobId: num
   const jobId = Number(m[2]);
   if (!Number.isSafeInteger(jobId)) return null;
   return { action: m[1] === "a" ? "applied" : "skipped", jobId };
+}
+
+/** /countries keyboard: one toggle per country, ✅ when selected. */
+export function countriesKeyboard(selected: readonly Country[]): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: COUNTRIES.map((c) => [
+      { text: `${selected.includes(c) ? "✅" : "⬜"} ${countryLabel(c)}`, callback_data: `c:${c}` },
+    ]),
+  };
+}
+
+const COUNTRY_CALLBACK_RE = /^c:([A-Z]{2})$/;
+
+/** The country of a /countries button ("c:CO"), or null. */
+export function parseCountryCallback(data: string): Country | null {
+  const code = COUNTRY_CALLBACK_RE.exec(data)?.[1];
+  return code !== undefined && (COUNTRIES as readonly string[]).includes(code) ? (code as Country) : null;
 }

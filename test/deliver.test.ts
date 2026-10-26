@@ -1,6 +1,10 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { classifyLocation } from "../src/core/match/rules";
+import { Store } from "../src/core/store/db";
+import type { DbDriver, Statement } from "../src/core/store/driver";
 import { TelegramError } from "../src/core/telegram/client";
+import { normalizeParams } from "../src/core/util";
 import { deliver } from "../src/poller/deliver";
 import { runPoll } from "../src/poller/run";
 import ghDetailNoPay from "./fixtures/greenhouse/detail-no-pay.json";
@@ -185,7 +189,7 @@ describe("deliver", () => {
 
   it("does nothing when called with no pending jobs", async () => {
     const stats = await deliver({ ...t.deps, excludedWords: [] });
-    expect(stats).toEqual({ sent: 0, messagesSent: 0, excluded: 0, detailFailures: 0, gone: 0, sendFailures: 0 });
+    expect(stats).toEqual({ sent: 0, messagesSent: 0, excluded: 0, detailFailures: 0, gone: 0, sendFailures: 0, unrouted: 0 });
     expect(t.telegram.getMeCalls).toBe(0);
   });
 
@@ -438,5 +442,157 @@ describe("multiple recipients", () => {
     await acmeWith("d1");
     await poll();
     expect(t.telegram.sends.map((s) => s.chatId)).toEqual([OWNER]);
+  });
+});
+
+describe("country routing", () => {
+  const OWNER = "1001";
+  const ALICE = "3003";
+  const BOB = "4004";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Pending Lever jobs for a baselined Acme (Lever has no detail fetch), with the given locations. */
+  async function pendingAt(...jobs: [id: string, locationText: string, countryCodes?: string[]][]) {
+    const companyId = await addCompany(t.store, "Acme", "lever", "acme", { baselined: true });
+    await t.store.runBatch(
+      jobs.map(([boardJobId, locationText, countryCodes = []], i) => {
+        const loc = classifyLocation({ locationText, remote: "unknown", countryCodes });
+        return t.store.stmtInsertJob(
+          {
+            companyId,
+            boardJobId,
+            title: `Senior Software Engineer ${boardJobId}`,
+            normalizedTitle: `senior software engineer ${boardJobId}`,
+            locationText,
+            locationClass: loc.cls,
+            locationReason: loc.reason ?? null,
+            locationCountries: loc.countries ?? [],
+            locationLatam: loc.latam ?? false,
+            applyUrl: `https://jobs.lever.co/acme/${boardJobId}`,
+            status: "pending",
+          },
+          t.clock.now + i,
+        );
+      }),
+    );
+  }
+
+  const run = () => deliver({ ...t.deps, excludedWords: [] });
+  const recipientsOf = (id: string) =>
+    t.telegram.sends.filter((s) => s.html.includes(`Senior Software Engineer ${id}<`)).map((s) => String(s.chatId));
+  async function deliveryUsers(boardJobId: string) {
+    const res = await env.DB.prepare(
+      "SELECT d.user_id FROM deliveries d JOIN jobs j ON j.id = d.job_id WHERE j.board_job_id = ? ORDER BY d.user_id",
+    ).bind(boardJobId).all<{ user_id: string }>();
+    return res.results.map((r) => r.user_id);
+  }
+
+  it("sends a Colombia job to the owner (all four by default) but not to a US-only member", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    await t.store.setUserCountries(ALICE, ["US"]);
+    await pendingAt(["co", "Remote - Colombia"], ["us", "Remote - US"]);
+
+    const stats = await run();
+
+    expect(stats).toMatchObject({ sent: 2, messagesSent: 3, unrouted: 0 });
+    expect(recipientsOf("co")).toEqual([OWNER]);
+    expect(recipientsOf("us")).toEqual([OWNER, ALICE]);
+    expect(await deliveryUsers("co")).toEqual([OWNER]);
+  });
+
+  it("sends a LATAM-wide job to everyone with Mexico, Colombia or Argentina selected", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    await t.store.inviteUser(BOB, 2);
+    await t.store.setUserCountries(OWNER, ["US"]);
+    await t.store.setUserCountries(ALICE, ["AR"]);
+    await t.store.setUserCountries(BOB, ["US", "MX"]);
+    await pendingAt(["latam", "Remote - LATAM"], ["mx", "Remote - Mexico"], ["ar", "Buenos Aires (Remote)"], ["usco", "Remote - US / Remote - Colombia"]);
+
+    await run();
+
+    expect(recipientsOf("latam")).toEqual([ALICE, BOB]);
+    expect(recipientsOf("mx")).toEqual([BOB]);
+    expect(recipientsOf("ar")).toEqual([ALICE]);
+    expect(recipientsOf("usco")).toEqual([OWNER, BOB]);
+    // The owner didn't get the LATAM job, so its owner message id is null.
+    expect((await jobRows()).find((r) => r.board_job_id === "latam")).toMatchObject({ status: "sent", telegram_message_id: null });
+  });
+
+  it("marks a job nobody selected as sent without sending, and never sends it later", async () => {
+    await t.store.setUserCountries(OWNER, ["US"]);
+    await pendingAt(["ar", "Remote - Argentina"], ["us", "Remote - US"]);
+
+    const stats = await run();
+    expect(stats).toMatchObject({ sent: 1, messagesSent: 1, unrouted: 1 });
+    expect(recipientsOf("ar")).toEqual([]);
+    expect(await jobStatus("ar")).toBe("sent");
+    expect(await deliveryUsers("ar")).toEqual([]);
+
+    // Selecting Argentina afterwards doesn't resend it.
+    await t.store.setUserCountries(OWNER, ["US", "AR"]);
+    t.telegram.sends.length = 0;
+    expect(await run()).toMatchObject({ sent: 0, messagesSent: 0, unrouted: 0 });
+    expect(t.telegram.sends).toEqual([]);
+    expect(await jobStatus("ar")).toBe("sent");
+  });
+
+  it("doesn't let a member who blocked the bot hold up a job routed only to them", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await t.store.inviteUser(ALICE, 1);
+    await t.store.setUserCountries(OWNER, ["US"]);
+    await t.store.setUserCountries(ALICE, ["CO"]);
+    t.telegram.failFor.set(ALICE, new TelegramError("Forbidden: bot was blocked by the user", 403, "Forbidden: bot was blocked by the user"));
+    await pendingAt(["co", "Remote - Colombia"], ["us", "Remote - US"]);
+
+    const stats = await run();
+
+    expect(stats).toMatchObject({ sent: 1, sendFailures: 1 });
+    expect(await jobStatus("co")).toBe("sent");
+    expect(await jobStatus("us")).toBe("sent");
+    expect(recipientsOf("us")).toEqual([OWNER]);
+  });
+
+  it("still stops on an ambiguous failure of a member who is a job's first recipient", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await t.store.inviteUser(ALICE, 1);
+    await t.store.setUserCountries(OWNER, ["US"]);
+    await t.store.setUserCountries(ALICE, ["CO"]);
+    await pendingAt(["co", "Remote - Colombia"], ["us", "Remote - US"]);
+    t.telegram.failNext = true;
+
+    expect(await run()).toMatchObject({ sent: 0, sendFailures: 1 });
+    expect(await jobStatus("co")).toBe("sending");
+    expect(await jobStatus("us")).toBe("pending");
+  });
+
+  it("reads recipients and their countries with one query per delivery run", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    await t.store.inviteUser(BOB, 2);
+    await t.store.setUserCountries(ALICE, ["CO"]);
+    await pendingAt(["a", "Remote - US"], ["b", "Remote - Colombia"], ["c", "Remote - LATAM"]);
+    const log: { sql: string; rowsRead: number }[] = [];
+    const prep = (s: Statement) => env.DB.prepare(s.sql).bind(...normalizeParams(s.params));
+    const driver: DbDriver = {
+      async query<T = Record<string, unknown>>(s: Statement): Promise<T[]> {
+        const res = await prep(s).all<T>();
+        log.push({ sql: s.sql, rowsRead: res.meta.rows_read });
+        return res.results;
+      },
+      async batch(stmts: Statement[]): Promise<void> {
+        const res = await env.DB.batch(stmts.map(prep));
+        stmts.forEach((s, i) => log.push({ sql: s.sql, rowsRead: res[i]!.meta.rows_read }));
+      },
+    };
+
+    const stats = await deliver({ ...t.deps, store: new Store(driver, () => t.clock.now), excludedWords: [] });
+
+    expect(stats).toMatchObject({ sent: 3, messagesSent: 8 });
+    const prefReads = log.filter((q) => q.sql.includes("user_prefs"));
+    expect(prefReads).toHaveLength(1);
+    expect(prefReads[0]!.rowsRead).toBeLessThanOrEqual(10);
+    expect(log.filter((q) => /FROM users/.test(q.sql))).toHaveLength(1);
   });
 });

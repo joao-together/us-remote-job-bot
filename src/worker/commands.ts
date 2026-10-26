@@ -1,11 +1,20 @@
 import { ATS_KINDS, ATS_NAMES, type AtsKind } from "../core/ats/types";
 import { parseBoardInput, SLUG_PATTERN } from "../core/ats/detect";
 import { MAX_EXCLUDED_WORD_LENGTH } from "../core/config";
-import { normalizeExcludedWord } from "../core/match/rules";
+import { COUNTRIES, normalizeExcludedWord, type Country } from "../core/match/rules";
 import type { CompanyRow, Store, UserRow } from "../core/store/db";
 import { TelegramError, type TelegramClient } from "../core/telegram/client";
 import { errorMessage, isRecord } from "../core/util";
-import { escapeHtml, jobKeyboard, parseCallbackData, truncate } from "../core/telegram/format";
+import {
+  COUNTRY_INFO,
+  countriesKeyboard,
+  countryLabel,
+  escapeHtml,
+  jobKeyboard,
+  parseCallbackData,
+  parseCountryCallback,
+  truncate,
+} from "../core/telegram/format";
 import { buildReport } from "./report";
 import { buildStatus } from "./watchdog";
 
@@ -152,7 +161,10 @@ async function handleStranger(msg: Message, from: Sender, { store, telegram, own
 
 // ---- buttons ----
 
-async function handleCallback(cb: CallbackQuery, { store, telegram, now }: CommandDeps): Promise<void> {
+async function handleCallback(cb: CallbackQuery, deps: CommandDeps): Promise<void> {
+  const { store, telegram, now } = deps;
+  const country = parseCountryCallback(cb.data ?? "");
+  if (country) return toggleCountry(cb, country, deps);
   const parsed = parseCallbackData(cb.data ?? "");
   if (!parsed) {
     await telegram.answerCallbackQuery(cb.id, "Unknown button");
@@ -169,10 +181,30 @@ async function handleCallback(cb: CallbackQuery, { store, telegram, now }: Comma
   }
 }
 
+/** A /countries button: turns one country on or off for the tapping user, never the last one. */
+async function toggleCountry(cb: CallbackQuery, country: Country, { store, telegram }: CommandDeps): Promise<void> {
+  const userId = String(cb.from.id);
+  const current = await store.getUserCountries(userId);
+  const on = !current.includes(country);
+  const next = on ? COUNTRIES.filter((c) => c === country || current.includes(c)) : current.filter((c) => c !== country);
+  if (next.length === 0) {
+    await telegram.answerCallbackQuery(cb.id, "Keep at least one country selected");
+    return;
+  }
+  const saved = await store.setUserCountries(userId, next);
+  await telegram.answerCallbackQuery(cb.id, `${countryLabel(country)} ${on ? "on" : "off"}`);
+  if (cb.message) await telegram.editMessageReplyMarkup(cb.message.chat.id, cb.message.message_id, countriesKeyboard(saved));
+}
+
 // ---- commands ----
 
-const MEXICO_HELP =
-  "Remote roles open to Mexico (or LATAM) are sent too, starting with 🇲🇽 <b>MEXICO REMOTE</b>. US alerts that also list a remote-Mexico location add 🇲🇽 Also open to Mexico.";
+const COUNTRIES_HELP = [
+  "Remote roles open to Mexico, Colombia or Argentina are sent too, starting with a banner like 🇨🇴 <b>COLOMBIA REMOTE</b> (🌎 <b>LATAM REMOTE</b> for Latin-America-wide roles). US alerts that also list another country add a line like \"Also open to: 🇲🇽 Mexico\".",
+  "/countries picks which countries you get alerts for (all four by default).",
+].join("\n");
+
+const COUNTRIES_TEXT =
+  "<b>Countries for your alerts</b>\nTap to turn a country on or off. You get remote roles open to any selected country; LATAM-wide roles count for Mexico, Colombia and Argentina.";
 
 const OWNER_HELP = [
   "<b>US remote job alerts</b>",
@@ -190,9 +222,10 @@ const OWNER_HELP = [
   "/status — health and counts",
   "/applied — jobs you marked applied",
   "/report — today's applications so far (sent daily at 09:00 Brazil time for the day before)",
+  "/countries — choose the countries you get alerts for",
   "/help — this message",
   "",
-  MEXICO_HELP,
+  COUNTRIES_HELP,
 ].join("\n");
 
 const MEMBER_HELP = [
@@ -203,9 +236,10 @@ const MEMBER_HELP = [
   "/status — health and counts",
   "/applied — jobs you marked applied",
   "/report — today's applications so far (sent daily at 09:00 Brazil time for the day before)",
+  "/countries — choose the countries you get alerts for",
   "/help — this message",
   "",
-  MEXICO_HELP,
+  COUNTRIES_HELP,
 ].join("\n");
 
 const OWNER_ONLY = new Set(["add", "remove", "companies", "exclude", "pause", "resume", "invite", "revoke", "users"]);
@@ -258,8 +292,13 @@ async function handleMessage(msg: Message, role: Exclude<Role, "unknown">, deps:
     case "status": {
       let status = await buildStatus(deps.store, deps.now());
       if (role === "owner") status += `\nInvited users: ${await deps.store.countActiveUsers()}`;
+      const countries = await deps.store.getUserCountries(userId);
+      status += `\nYour countries: ${countries.map((c) => COUNTRY_INFO[c].flag).join(" ")} (change with /countries)`;
       return reply(status);
     }
+    case "countries":
+      await deps.telegram.sendMessage(msg.chat.id, COUNTRIES_TEXT, countriesKeyboard(await deps.store.getUserCountries(userId)));
+      return;
     case "report":
       return reply(await buildReport(deps.store, userId, deps.ownerId, "today", deps.now()));
     case "applied":

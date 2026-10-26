@@ -141,17 +141,39 @@ describe("detection and delivery", () => {
     expect(await jobStatus("mxcity")).toBeUndefined();
   });
 
-  it("stores alsoMexico for a US job that also lists Mexico and shows it in the alert", async () => {
+  it("stores the other countries of a US job and shows them in the alert", async () => {
     boards.lever.acme = [];
     await addCompany(t.store, "Acme", "lever", "acme");
     await poll();
-    boards.lever.acme.push(leverPosting("both", SENIOR, { location: "Remote - US / Remote - Mexico", country: "US" }));
+    boards.lever.acme.push(leverPosting("both", SENIOR, { location: "Remote - US / Remote - Mexico / Remote - Colombia", country: "US" }));
     await poll();
     expect(t.telegram.sends).toHaveLength(1);
     const html = t.telegram.sends[0]!.html;
     expect(html.split("\n")[0]).toBe(`<b>${SENIOR}</b>`);
-    expect(html).toContain("🇲🇽 Also open to Mexico");
-    expect((await jobRows()).find((r) => r.board_job_id === "both")).toMatchObject({ location_class: "us+mx" });
+    expect(html).toContain("Also open to: 🇲🇽 Mexico, 🇨🇴 Colombia");
+    expect((await jobRows()).find((r) => r.board_job_id === "both")).toMatchObject({ location_class: "us+mx+co" });
+  });
+
+  it("sends Colombia, Argentina and LATAM-wide remote jobs with their banners", async () => {
+    boards.lever.acme = [];
+    await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    boards.lever.acme.push(
+      leverPosting("co", SENIOR, { location: "Bogotá, Colombia (Remote)", country: "CO" }),
+      leverPosting("ar", "Senior Backend Engineer", { location: "Buenos Aires (Remote)", country: "AR" }),
+      leverPosting("latam", "Senior Frontend Engineer", { location: "Remote - LATAM", country: "" }),
+      leverPosting("denver", "Senior Mobile Engineer", { location: "Denver, CO", country: "US" }),
+    );
+    await poll();
+    expect(t.telegram.sends.map((s) => s.html.split("\n")[0])).toEqual([
+      "🇨🇴 <b>COLOMBIA REMOTE</b>",
+      "🇦🇷 <b>ARGENTINA REMOTE</b>",
+      "🌎 <b>LATAM REMOTE</b>",
+      "<b>Senior Mobile Engineer</b>",
+    ]);
+    expect(t.telegram.sends[2]!.html).toContain("⚠️ LATAM — check your country is eligible");
+    const classes = Object.fromEntries((await jobRows()).map((r) => [r.board_job_id, r.location_class]));
+    expect(classes).toMatchObject({ co: "intl+co", ar: "intl+ar", latam: "intl+latam", denver: "us" });
   });
 
   it("does not re-send a known job whose title changed (AE6)", async () => {

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { Country } from "../src/core/match/rules";
 import {
+  countriesKeyboard,
   escapeHtml,
   formatJobAlert,
   jobKeyboard,
   parseCallbackData,
+  parseCountryCallback,
   type JobAlert,
 } from "../src/core/telegram/format";
 
@@ -70,28 +73,51 @@ describe("formatJobAlert", () => {
     expect(html).toContain("⚠️ Only CA, NY &amp; TX");
   });
 
-  it("puts the Mexico banner first for an mx job, with no warning when there is no reason", () => {
-    const html = formatJobAlert(job({ locationText: "Remote - Mexico", locationClass: "mx" }), NOW);
+  it("puts the Mexico banner first for an MX-only job, with no warning when there is no reason", () => {
+    const html = formatJobAlert(job({ locationText: "Remote - Mexico", locationClass: "intl", countries: ["MX"] }), NOW);
     const lines = html.split("\n");
     expect(lines[0]).toBe("🇲🇽 <b>MEXICO REMOTE</b>");
     expect(lines[1]).toBe("<b>Senior Engineer</b>");
     expect(html).toContain("📍 Remote - Mexico");
     expect(html).not.toContain("⚠️");
-    expect(html).not.toContain("Also open to Mexico");
+    expect(html).not.toContain("Also open to");
   });
 
-  it("shows the LATAM reason under an mx job's location", () => {
+  it.each([
+    [["CO"], "🇨🇴 <b>COLOMBIA REMOTE</b>"],
+    [["AR"], "🇦🇷 <b>ARGENTINA REMOTE</b>"],
+    [["MX", "CO"], "🇲🇽🇨🇴 <b>MEXICO · COLOMBIA REMOTE</b>"],
+    [["MX", "CO", "AR"], "🇲🇽🇨🇴🇦🇷 <b>MEXICO · COLOMBIA · ARGENTINA REMOTE</b>"],
+  ] as [Country[], string][])("gives an intl job with countries %j the banner %s", (countries, banner) => {
+    const html = formatJobAlert(job({ locationText: "Remote", locationClass: "intl", countries }), NOW);
+    expect(html.split("\n")[0]).toBe(banner);
+    expect(html).not.toContain("⚠️");
+    expect(html).not.toContain("Also open to");
+  });
+
+  it("gives a LATAM-wide job the LATAM banner and warning", () => {
     const html = formatJobAlert(
-      job({ locationText: "Remote - LATAM", locationClass: "mx", locationReason: "LATAM — check Mexico is eligible" }),
+      job({ locationText: "Remote - LATAM", locationClass: "intl", countries: [], latam: true, locationReason: "LATAM — check your country is eligible" }),
       NOW,
     );
-    expect(html.split("\n")[0]).toBe("🇲🇽 <b>MEXICO REMOTE</b>");
-    expect(html).toContain("📍 Remote - LATAM\n⚠️ LATAM — check Mexico is eligible");
+    expect(html.split("\n")[0]).toBe("🌎 <b>LATAM REMOTE</b>");
+    expect(html).toContain("📍 Remote - LATAM\n⚠️ LATAM — check your country is eligible");
+    expect(html).not.toContain("Also open to");
+    // Without a stored reason the warning is still shown.
+    const bare = formatJobAlert(job({ locationText: "Remote - LATAM", locationClass: "intl", latam: true }), NOW);
+    expect(bare).toContain("⚠️ LATAM — check your country is eligible");
   });
 
-  it("escapes an mx job's title, location and reason", () => {
+  it("names LATAM as an extra on a country banner", () => {
+    const html = formatJobAlert(job({ locationText: "Remote - LATAM / Colombia", locationClass: "intl", countries: ["CO"], latam: true }), NOW);
+    expect(html.split("\n")[0]).toBe("🇨🇴 <b>COLOMBIA REMOTE</b>");
+    expect(html).toContain("Also open to: 🌎 LATAM");
+    expect(html).not.toContain("⚠️");
+  });
+
+  it("escapes an intl job's title, location and reason", () => {
     const html = formatJobAlert(
-      job({ title: "Sr <Dev> & Co", locationText: "Remote <MX> & more", locationClass: "mx", locationReason: "a<b>&c" }),
+      job({ title: "Sr <Dev> & Co", locationText: "Remote <MX> & more", locationClass: "intl", countries: ["MX"], locationReason: "a<b>&c" }),
       NOW,
     );
     expect(html).toContain("<b>Sr &lt;Dev&gt; &amp; Co</b>");
@@ -99,17 +125,19 @@ describe("formatJobAlert", () => {
     expect(html).toContain("⚠️ a&lt;b&gt;&amp;c");
   });
 
-  it("adds 'Also open to Mexico' to a US alert with alsoMexico, without the banner", () => {
-    const html = formatJobAlert(job({ locationText: "Remote - US / Remote - Mexico", alsoMexico: true }), NOW);
+  it("adds 'Also open to' with the other countries to a US alert, without a banner", () => {
+    const html = formatJobAlert(job({ locationText: "Remote - US / Remote - Mexico / Colombia", countries: ["US", "MX", "CO"] }), NOW);
     expect(html.split("\n")[0]).toBe("<b>Senior Engineer</b>");
-    expect(html).toContain("📍 Remote - US / Remote - Mexico\n🇲🇽 Also open to Mexico");
-    expect(html).not.toContain("MEXICO REMOTE");
+    expect(html).toContain("📍 Remote - US / Remote - Mexico / Colombia\nAlso open to: 🇲🇽 Mexico, 🇨🇴 Colombia");
+    expect(html).not.toContain("REMOTE</b>");
     expect(html).not.toContain("⚠️");
     const restricted = formatJobAlert(
-      job({ locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY", alsoMexico: true }),
+      job({ locationClass: "us_restricted", locationReason: "Limited to some US states: CA, NY", countries: ["US", "AR"] }),
       NOW,
     );
-    expect(restricted).toContain("⚠️ Limited to some US states: CA, NY\n🇲🇽 Also open to Mexico");
+    expect(restricted).toContain("⚠️ Limited to some US states: CA, NY\nAlso open to: 🇦🇷 Argentina");
+    expect(formatJobAlert(job({ countries: ["US"], latam: true }), NOW)).toContain("Also open to: 🌎 LATAM");
+    expect(formatJobAlert(job({ countries: ["US"] }), NOW)).not.toContain("Also open to");
     expect(formatJobAlert(job(), NOW)).not.toContain("Mexico");
   });
 
@@ -214,4 +242,26 @@ describe("parseCallbackData", () => {
       expect(parseCallbackData(data)).toBeNull();
     },
   );
+});
+
+describe("countriesKeyboard", () => {
+  it("shows one toggle per country, checked when selected, with short callback data", () => {
+    const kb = countriesKeyboard(["US", "CO"]);
+    expect(kb.inline_keyboard.map((row) => row.map((b) => [b.text, b.callback_data]))).toEqual([
+      [["✅ 🇺🇸 United States", "c:US"]],
+      [["⬜ 🇲🇽 Mexico", "c:MX"]],
+      [["✅ 🇨🇴 Colombia", "c:CO"]],
+      [["⬜ 🇦🇷 Argentina", "c:AR"]],
+    ]);
+    for (const row of kb.inline_keyboard) for (const b of row) expect(new TextEncoder().encode(b.callback_data).length).toBeLessThanOrEqual(64);
+  });
+
+  it("parses only known country buttons", () => {
+    expect(parseCountryCallback("c:CO")).toBe("CO");
+    expect(parseCountryCallback("c:AR")).toBe("AR");
+    expect(parseCountryCallback("c:BR")).toBeNull();
+    expect(parseCountryCallback("c:co")).toBeNull();
+    expect(parseCountryCallback("a:1")).toBeNull();
+    expect(parseCallbackData("c:US")).toBeNull();
+  });
 });
