@@ -170,7 +170,7 @@ export async function deliver(deps: DeliverDeps): Promise<DeliverStats> {
 
       let messageId: number;
       try {
-        ({ messageId } = await telegram.sendMessage(userId, html, jobKeyboard(job.id)));
+        ({ messageId } = await telegram.sendMessage(userId, html, jobKeyboard(job.id, undefined, { applyUrl: job.applyUrl })));
       } catch (err) {
         stats.sendFailures++;
         if (delivered === 0 && (userId === ownerId || !chatRejected(err))) {

@@ -1,3 +1,4 @@
+import { callbackDataOf } from "../src/core/telegram/format";
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { classifyLocation } from "../src/core/match/rules";
@@ -87,7 +88,12 @@ describe("deliver", () => {
 
     expect(t.telegram.sends).toHaveLength(1);
     expect(t.telegram.sends[0]!.html).toContain("💰 $170,000");
-    expect(t.telegram.sends[0]!.markup?.inline_keyboard[0]?.map((b) => b.callback_data)[0]).toMatch(/^a:\d+$/);
+    expect(t.telegram.sends[0]!.markup?.inline_keyboard[0]?.map((b) => callbackDataOf(b)!)[0]).toMatch(/^a:\d+$/);
+    const applyUrl = "https://job-boards.greenhouse.io/globex/jobs/12";
+    expect(t.telegram.sends[0]!.markup?.inline_keyboard[1]).toEqual([
+      { text: "📋 Copy link", copy_text: { text: applyUrl } },
+      { text: "🌐 Open", url: applyUrl },
+    ]);
     expect((await jobRows())[0]).toMatchObject({ status: "sent", salary_text: expect.stringContaining("170,000") });
   });
 

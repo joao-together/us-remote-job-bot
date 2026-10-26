@@ -1,3 +1,4 @@
+import { callbackDataOf } from "../src/core/telegram/format";
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AtsKind } from "../src/core/ats/types";
@@ -369,6 +370,29 @@ describe("/applied", () => {
 });
 
 describe("buttons", () => {
+  it("keeps the alert's Copy link / Open row when Applied is tapped, dropping malformed buttons", async () => {
+    const c = await addCompany("Acme", "acme");
+    const id = await sentJob(c.id, "1");
+    const url = "https://jobs.lever.co/acme/1";
+    const update = callback(`a:${id}`);
+    (update.callback_query.message as Record<string, unknown>).reply_markup = {
+      inline_keyboard: [
+        [{ text: "✅ Applied", callback_data: `a:${id}` }, { text: "❌ Skip", callback_data: `s:${id}` }],
+        [
+          { text: "📋 Copy link", copy_text: { text: url } },
+          { text: "🌐 Open", url },
+          { text: "evil", url: "javascript:alert(1)" },
+          { text: "too long", copy_text: { text: "x".repeat(300) } },
+        ],
+      ],
+    };
+    await handleUpdate(update, deps());
+    expect(tg.edits.at(-1)?.markup.inline_keyboard).toEqual([
+      [{ text: "✅ Applied ✓", callback_data: `a:${id}` }, { text: "↩️ Mark skipped", callback_data: `s:${id}` }],
+      [{ text: "📋 Copy link", copy_text: { text: url } }, { text: "🌐 Open", url }],
+    ]);
+  });
+
   it("records applied, switches to skipped, and a double tap is idempotent", async () => {
     const c = await addCompany("Acme", "acme");
     const id = await sentJob(c.id, "1");
@@ -678,7 +702,7 @@ describe("/report", () => {
 
 describe("/countries", () => {
   const checked = (markup: InlineKeyboardMarkup | undefined) =>
-    (markup?.inline_keyboard ?? []).flat().filter((b) => b.text.startsWith("✅")).map((b) => b.callback_data);
+    (markup?.inline_keyboard ?? []).flat().filter((b) => b.text.startsWith("✅")).map((b) => callbackDataOf(b)!);
   const tap = (data: string, from = OWNER) => handleUpdate(callback(data, { from }), deps());
 
   beforeEach(async () => {

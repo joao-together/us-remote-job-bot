@@ -13,7 +13,9 @@ import {
   jobKeyboard,
   parseCallbackData,
   parseCountryCallback,
+  MAX_COPY_TEXT,
   truncate,
+  type InlineKeyboardButton,
 } from "../core/telegram/format";
 import { buildReport } from "./report";
 import { buildStatus } from "./watchdog";
@@ -48,6 +50,8 @@ interface Message {
   from?: Sender;
   chat: Chat;
   text?: string;
+  /** Link rows (📋 Copy link / 🌐 Open) from the message's current keyboard, validated. */
+  linkRows?: InlineKeyboardButton[][];
 }
 
 interface CallbackQuery {
@@ -80,12 +84,37 @@ function asMessage(v: unknown): Message | undefined {
   const chat = asChat(v.chat);
   if (!chat) return undefined;
   const from = asSender(v.from);
+  const linkRows = asLinkRows(v.reply_markup);
   return {
     message_id: v.message_id,
     chat,
     ...(from && { from }),
     ...(typeof v.text === "string" && { text: v.text }),
+    ...(linkRows.length > 0 && { linkRows }),
   };
+}
+
+/**
+ * Keeps only well-formed link buttons from a message's keyboard (https url buttons and copy_text
+ * buttons) so editing Applied/Skip preserves the alert's link row without a database read.
+ */
+function asLinkRows(markup: unknown): InlineKeyboardButton[][] {
+  if (!isRecord(markup) || !Array.isArray(markup.inline_keyboard)) return [];
+  const rows: InlineKeyboardButton[][] = [];
+  for (const row of markup.inline_keyboard) {
+    if (!Array.isArray(row)) continue;
+    const kept: InlineKeyboardButton[] = [];
+    for (const b of row) {
+      if (!isRecord(b) || typeof b.text !== "string" || b.text.length > 64) continue;
+      if (typeof b.url === "string" && b.url.startsWith("https://") && b.url.length <= 2048) {
+        kept.push({ text: b.text, url: b.url });
+      } else if (isRecord(b.copy_text) && typeof b.copy_text.text === "string" && b.copy_text.text.length <= MAX_COPY_TEXT) {
+        kept.push({ text: b.text, copy_text: { text: b.copy_text.text } });
+      }
+    }
+    if (kept.length > 0) rows.push(kept);
+  }
+  return rows;
 }
 
 function asCallbackQuery(v: unknown): CallbackQuery | undefined {
@@ -177,7 +206,7 @@ async function handleCallback(cb: CallbackQuery, deps: CommandDeps): Promise<voi
   }
   await telegram.answerCallbackQuery(cb.id, parsed.action === "applied" ? "Marked applied" : "Marked skipped");
   if (cb.message) {
-    await telegram.editMessageReplyMarkup(cb.message.chat.id, cb.message.message_id, jobKeyboard(parsed.jobId, parsed.action));
+    await telegram.editMessageReplyMarkup(cb.message.chat.id, cb.message.message_id, jobKeyboard(parsed.jobId, parsed.action, { extraRows: cb.message.linkRows ?? [] }));
   }
 }
 

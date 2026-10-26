@@ -1,3 +1,4 @@
+import { callbackDataOf } from "../src/core/telegram/format";
 import { describe, expect, it } from "vitest";
 import type { Country } from "../src/core/match/rules";
 import {
@@ -5,6 +6,7 @@ import {
   escapeHtml,
   formatJobAlert,
   jobKeyboard,
+  linkRow,
   parseCallbackData,
   parseCountryCallback,
   type JobAlert,
@@ -197,6 +199,36 @@ describe("formatJobAlert", () => {
 });
 
 describe("jobKeyboard", () => {
+  it("adds a Copy link / Open row for the apply URL", () => {
+    const url = "https://jobs.lever.co/acme/123";
+    expect(jobKeyboard(42, undefined, { applyUrl: url }).inline_keyboard).toEqual([
+      [
+        { text: "✅ Applied", callback_data: "a:42" },
+        { text: "❌ Skip", callback_data: "s:42" },
+      ],
+      [
+        { text: "📋 Copy link", copy_text: { text: url } },
+        { text: "🌐 Open", url },
+      ],
+    ]);
+  });
+
+  it("offers only Open when the URL is longer than Telegram's 256-character copy limit", () => {
+    const url = `https://jobs.example.com/${"x".repeat(300)}`;
+    expect(linkRow(url)).toEqual([{ text: "🌐 Open", url }]);
+  });
+
+  it("adds no link row for missing or non-https URLs", () => {
+    expect(linkRow(undefined)).toEqual([]);
+    expect(linkRow("http://insecure.example.com/job")).toEqual([]);
+    expect(jobKeyboard(42, undefined, { applyUrl: "javascript:alert(1)" }).inline_keyboard).toHaveLength(1);
+  });
+
+  it("keeps given extra rows unchanged after Applied/Skip", () => {
+    const row = [{ text: "📋 Copy link", copy_text: { text: "https://a.test/j" } }];
+    expect(jobKeyboard(42, "applied", { extraRows: [row] }).inline_keyboard[1]).toEqual(row);
+  });
+
   it("shows Applied / Skip initially", () => {
     expect(jobKeyboard(42)).toEqual({
       inline_keyboard: [[
@@ -220,7 +252,7 @@ describe("jobKeyboard", () => {
   it("keeps callback data under 64 bytes", () => {
     for (const action of [undefined, "applied", "skipped"] as const) {
       for (const button of jobKeyboard(Number.MAX_SAFE_INTEGER, action).inline_keyboard.flat()) {
-        expect(new TextEncoder().encode(button.callback_data).length).toBeLessThanOrEqual(64);
+        expect(new TextEncoder().encode(callbackDataOf(button)!).length).toBeLessThanOrEqual(64);
       }
     }
   });
@@ -229,7 +261,7 @@ describe("jobKeyboard", () => {
 describe("parseCallbackData", () => {
   it("round-trips keyboard callback data", () => {
     for (const button of jobKeyboard(123).inline_keyboard.flat()) {
-      const parsed = parseCallbackData(button.callback_data);
+      const parsed = parseCallbackData(callbackDataOf(button)!);
       expect(parsed?.jobId).toBe(123);
     }
     expect(parseCallbackData("a:123")).toEqual({ action: "applied", jobId: 123 });
@@ -247,13 +279,13 @@ describe("parseCallbackData", () => {
 describe("countriesKeyboard", () => {
   it("shows one toggle per country, checked when selected, with short callback data", () => {
     const kb = countriesKeyboard(["US", "CO"]);
-    expect(kb.inline_keyboard.map((row) => row.map((b) => [b.text, b.callback_data]))).toEqual([
+    expect(kb.inline_keyboard.map((row) => row.map((b) => [b.text, callbackDataOf(b)!]))).toEqual([
       [["✅ 🇺🇸 United States", "c:US"]],
       [["⬜ 🇲🇽 Mexico", "c:MX"]],
       [["✅ 🇨🇴 Colombia", "c:CO"]],
       [["⬜ 🇦🇷 Argentina", "c:AR"]],
     ]);
-    for (const row of kb.inline_keyboard) for (const b of row) expect(new TextEncoder().encode(b.callback_data).length).toBeLessThanOrEqual(64);
+    for (const row of kb.inline_keyboard) for (const b of row) expect(new TextEncoder().encode(callbackDataOf(b)!).length).toBeLessThanOrEqual(64);
   });
 
   it("parses only known country buttons", () => {

@@ -20,10 +20,11 @@ export interface JobAlert {
   applyUrl: string;
 }
 
-export interface InlineKeyboardButton {
-  text: string;
-  callback_data: string;
-}
+export type InlineKeyboardButton =
+  | { text: string; callback_data: string }
+  | { text: string; url: string }
+  /** Telegram copies `copy_text.text` (≤256 chars) to the clipboard when tapped. */
+  | { text: string; copy_text: { text: string } };
 
 export interface InlineKeyboardMarkup {
   inline_keyboard: InlineKeyboardButton[][];
@@ -111,7 +112,38 @@ export function formatJobAlert(job: JobAlert, now: number): string {
   return lines.join("\n");
 }
 
-export function jobKeyboard(jobId: number, action?: JobAction): InlineKeyboardMarkup {
+/** A button's callback_data, or undefined for url/copy buttons. */
+export function callbackDataOf(b: InlineKeyboardButton): string | undefined {
+  return "callback_data" in b ? b.callback_data : undefined;
+}
+
+/** Telegram's limit for a copy_text button's text. */
+export const MAX_COPY_TEXT = 256;
+
+/** "📋 Copy link" (when the URL fits Telegram's copy limit) and "🌐 Open" for an https apply URL. */
+export function linkRow(applyUrl: string | undefined): InlineKeyboardButton[] {
+  if (!applyUrl || !applyUrl.startsWith("https://")) return [];
+  const row: InlineKeyboardButton[] = [];
+  if (applyUrl.length <= MAX_COPY_TEXT) row.push({ text: "📋 Copy link", copy_text: { text: applyUrl } });
+  row.push({ text: "🌐 Open", url: applyUrl });
+  return row;
+}
+
+/**
+ * Applied/Skip row for a job, plus extra rows (the link row) appended unchanged. Without
+ * `extraRows`, the link row is built from `applyUrl`.
+ */
+export function jobKeyboard(
+  jobId: number,
+  action?: JobAction,
+  links: { applyUrl?: string; extraRows?: InlineKeyboardButton[][] } = {},
+): InlineKeyboardMarkup {
+  const actionRow = actionKeyboard(jobId, action).inline_keyboard[0]!;
+  const extra = links.extraRows ?? (linkRow(links.applyUrl).length ? [linkRow(links.applyUrl)] : []);
+  return { inline_keyboard: [actionRow, ...extra] };
+}
+
+function actionKeyboard(jobId: number, action?: JobAction): InlineKeyboardMarkup {
   const applied = `a:${jobId}`;
   const skipped = `s:${jobId}`;
   if (action === "applied") {
