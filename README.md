@@ -6,14 +6,14 @@ It reads Greenhouse, Lever, Ashby and Workable job boards directly (the same sou
 
 | Part | Runs on | Does |
 |---|---|---|
-| Poller | GitHub Actions, started every 15 min from 08:00 to 20:00 US Eastern by the Worker (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
+| Poller | GitHub Actions, started every 15 min from 09:00 to 21:00 Brazil time by the Worker (public repo, unlimited free minutes) | Fetches boards, matches jobs, sends alerts |
 | Company list | GitHub Actions, started weekly by the Worker | Adds new live boards, moves quiet boards to the wide tier (every 90 min) |
 | Bot | Cloudflare Worker | Commands, button taps, watchdog warnings, starting the two workflows |
 | Storage | Cloudflare D1 | Companies, seen jobs, invited users, per-user deliveries, settings |
 
 ## How it works
 
-- **Active hours.** Boards are checked only 12:00–24:00 UTC (08:00–20:00 US Eastern daylight time, 07:00–19:00 in winter), when US companies post. Nothing is polled overnight; roles posted then are picked up by the first run of the day. The window is `ACTIVE_HOURS_UTC` in `src/core/config.ts` (keep `POLL_CRON` and `wrangler.toml` in sync).
+- **Active hours.** Boards are checked only 12:00–24:00 UTC = **09:00–21:00 Brazil time** (BRT has no daylight saving; that is 08:00–20:00 US Eastern in summer, 07:00–19:00 in winter). Nothing is polled overnight; roles posted then are picked up by the first run of the day. The window is `ACTIVE_HOURS_UTC` in `src/core/config.ts` (keep `POLL_CRON` and `wrangler.toml` in sync).
 - **Two tiers.** Every company is either **fast** or **wide**. Fast boards — the ones that have produced a matching role recently — are checked on every run, every 15 minutes during active hours. Wide boards (thousands of boards that rarely or never post a matching role) are split into 6 groups by id and one group is checked per run, so each is checked about **every 90 minutes** during active hours.
 - **Promotion.** The moment a wide board posts a new role that passes the match rules, you get the alert and the board becomes fast.
 - **Demotion.** Once a week, fast boards with no new matching role in 30 days (and added more than 30 days ago) become wide. Boards you `/add` start fast.

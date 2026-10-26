@@ -259,8 +259,8 @@ describe("buildStatus", () => {
     expect(html).toContain("Last successful check: 2h ago");
     expect(html).toContain("Last poll: 8 boards ok, 2 failed, 4 jobs sent");
     expect(html).toContain("Running");
-    expect(html).toContain("Checks run every 15 min, 08:00–20:00 US Eastern (12:00–24:00 UTC)");
-    expect(SCHEDULE_TEXT).toBe("Checks run every 15 min, 08:00–20:00 US Eastern (12:00–24:00 UTC)");
+    expect(html).toContain("Checks run every 15 min, 09:00–21:00 Brazil time (12:00–24:00 UTC)");
+    expect(SCHEDULE_TEXT).toBe("Checks run every 15 min, 09:00–21:00 Brazil time (12:00–24:00 UTC)");
   });
 
   it("shows the tier split and lists only failing fast-tier companies", async () => {

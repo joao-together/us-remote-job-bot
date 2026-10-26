@@ -41,7 +41,7 @@ export const REPOST_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export const POSTED_AGO_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Hours (UTC, [start, end)) in which the poller runs: 12:00–24:00 UTC = 08:00–20:00 US Eastern
+ * Hours (UTC, [start, end)) in which the poller runs: 12:00–24:00 UTC = 09:00–21:00 Brazil time (BRT, UTC−3; 08:00–20:00 US Eastern daylight time)
  * daylight time (07:00–19:00 in winter). POLL_CRON in src/worker/dispatch.ts must match. Outside
  * these hours nothing polls, the watchdog doesn't report staleness and a stray cron doesn't poll.
  */
