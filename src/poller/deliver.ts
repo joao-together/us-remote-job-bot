@@ -43,11 +43,14 @@ function alertClass(cls: LocationClass | null): AlertLocationClass {
 
 /**
  * Who gets this job, in recipient order: everyone whose countries include one the job is open to
- * (LATAM-wide counts as Mexico, Colombia and Argentina). A job with no stored countries (no class)
- * is shown as US-ambiguous, so it goes to US recipients.
+ * (LATAM-wide counts as Mexico, Colombia and Argentina; Europe/EMEA-wide as the UK). A job with
+ * no stored countries (no class) is shown as US-ambiguous, so it goes to US recipients.
  */
-export function routeJob(job: Pick<PendingJob, "locationCountries" | "locationLatam">, recipients: readonly Recipient[]): string[] {
-  let route = routeCountries(job.locationCountries, job.locationLatam);
+export function routeJob(
+  job: Pick<PendingJob, "locationCountries" | "locationLatam"> & Partial<Pick<PendingJob, "locationEmea">>,
+  recipients: readonly Recipient[],
+): string[] {
+  let route = routeCountries(job.locationCountries, job.locationLatam, job.locationEmea ?? false);
   if (route.size === 0) route = new Set<Country>(["US"]);
   return recipients.filter((r) => r.countries.some((c) => route.has(c))).map((r) => r.userId);
 }
@@ -154,6 +157,7 @@ export async function deliver(deps: DeliverDeps): Promise<DeliverStats> {
         locationReason: job.locationReason ?? undefined,
         countries: job.locationCountries,
         latam: job.locationLatam,
+        emea: job.locationEmea,
         salaryText: salaryText ?? undefined,
         postedAt: job.postedAt ?? undefined,
         applyUrl: job.applyUrl,

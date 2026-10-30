@@ -228,12 +228,12 @@ async function toggleCountry(cb: CallbackQuery, country: Country, { store, teleg
 // ---- commands ----
 
 const COUNTRIES_HELP = [
-  "Remote roles open to Mexico, Colombia or Argentina are sent too, starting with a banner like 🇨🇴 <b>COLOMBIA REMOTE</b> (🌎 <b>LATAM REMOTE</b> for Latin-America-wide roles). US alerts that also list another country add a line like \"Also open to: 🇲🇽 Mexico\".",
-  "/countries picks which countries you get alerts for (all four by default).",
+  "Remote roles open to Mexico, Colombia, Argentina or the United Kingdom are sent too, starting with a banner like 🇨🇴 <b>COLOMBIA REMOTE</b> or 🇬🇧 <b>UK REMOTE</b> (🌎 <b>LATAM REMOTE</b> for Latin-America-wide roles, 🇪🇺 <b>EUROPE/EMEA REMOTE</b> for Europe-wide ones). US alerts that also list another country add a line like \"Also open to: 🇲🇽 Mexico\".",
+  "/countries picks which countries you get alerts for (all five by default).",
 ].join("\n");
 
 const COUNTRIES_TEXT =
-  "<b>Countries for your alerts</b>\nTap to turn a country on or off. You get remote roles open to any selected country; LATAM-wide roles count for Mexico, Colombia and Argentina.";
+  "<b>Countries for your alerts</b>\nTap to turn a country on or off. You get remote roles open to any selected country; LATAM-wide roles count for Mexico, Colombia and Argentina, Europe/EMEA-wide roles for the United Kingdom.";
 
 const OWNER_HELP = [
   "<b>US remote job alerts</b>",

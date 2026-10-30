@@ -15,6 +15,8 @@ export interface JobAlert {
   countries?: readonly Country[];
   /** A remote location is LATAM-wide (names no country). */
   latam?: boolean;
+  /** A remote location is Europe/EMEA-wide (and the posting doesn't name the UK). */
+  emea?: boolean;
   salaryText?: string;
   postedAt?: number;
   applyUrl: string;
@@ -60,14 +62,19 @@ export function formatPostedAgo(postedAt: number | undefined, now: number): stri
   return `${Math.floor(hours / 24)}d`;
 }
 
-export const COUNTRY_INFO: Record<Country, { flag: string; name: string }> = {
-  US: { flag: "🇺🇸", name: "United States" },
-  MX: { flag: "🇲🇽", name: "Mexico" },
-  CO: { flag: "🇨🇴", name: "Colombia" },
-  AR: { flag: "🇦🇷", name: "Argentina" },
+/** `name` in lists and buttons; `banner` (upper case) in the first line of a non-US alert. */
+export const COUNTRY_INFO: Record<Country, { flag: string; name: string; banner: string }> = {
+  US: { flag: "🇺🇸", name: "United States", banner: "UNITED STATES" },
+  MX: { flag: "🇲🇽", name: "Mexico", banner: "MEXICO" },
+  CO: { flag: "🇨🇴", name: "Colombia", banner: "COLOMBIA" },
+  AR: { flag: "🇦🇷", name: "Argentina", banner: "ARGENTINA" },
+  UK: { flag: "🇬🇧", name: "United Kingdom", banner: "UK" },
 };
 
 const LATAM_WARNING = "LATAM — check your country is eligible";
+const EMEA_WARNING = "Europe/EMEA — check UK is eligible";
+const LATAM_REGION = { flag: "🌎", banner: "LATAM", label: "🌎 LATAM" };
+const EMEA_REGION = { flag: "🇪🇺", banner: "EUROPE/EMEA", label: "🇪🇺 Europe/EMEA" };
 
 /** "🇲🇽 Mexico" */
 export function countryLabel(c: Country): string {
@@ -75,32 +82,43 @@ export function countryLabel(c: Country): string {
 }
 
 /**
- * The first line of a non-US alert: "🇲🇽 <b>MEXICO REMOTE</b>", "🇲🇽🇨🇴 <b>MEXICO · COLOMBIA
- * REMOTE</b>", or "🌎 <b>LATAM REMOTE</b>" when no country is named.
+ * The first line of a non-US alert: "🇲🇽 <b>MEXICO REMOTE</b>", "🇲🇽🇬🇧 <b>MEXICO · UK
+ * REMOTE</b>", or, when no country is named, the regions: "🌎 <b>LATAM REMOTE</b>", "🇪🇺
+ * <b>EUROPE/EMEA REMOTE</b>" or both.
  */
-function intlBanner(abroad: readonly Country[]): string {
-  if (abroad.length === 0) return "🌎 <b>LATAM REMOTE</b>";
-  const flags = abroad.map((c) => COUNTRY_INFO[c].flag).join("");
-  return `${flags} <b>${abroad.map((c) => COUNTRY_INFO[c].name.toUpperCase()).join(" · ")} REMOTE</b>`;
+function intlBanner(abroad: readonly Country[], latam: boolean, emea: boolean): string {
+  const parts =
+    abroad.length > 0
+      ? abroad.map((c) => COUNTRY_INFO[c])
+      : [...(latam || !emea ? [LATAM_REGION] : []), ...(emea ? [EMEA_REGION] : [])];
+  return `${parts.map((p) => p.flag).join("")} <b>${parts.map((p) => p.banner).join(" · ")} REMOTE</b>`;
 }
 
 export function formatJobAlert(job: JobAlert, now: number): string {
   const intl = job.locationClass === "intl";
+  const latam = job.latam ?? false;
+  const emea = job.emea ?? false;
   const abroad = COUNTRIES.filter((c) => c !== "US" && job.countries?.includes(c));
-  const lines = intl ? [intlBanner(abroad)] : [];
+  const lines = intl ? [intlBanner(abroad, latam, emea)] : [];
   lines.push(`<b>${field(job.title, MAX_TITLE)}</b>`, `🏢 ${field(job.companyName, MAX_FIELD)}`);
 
   lines.push(`📍 ${field(job.locationText, MAX_FIELD)}`);
   const reason = job.locationReason?.trim();
   if (intl) {
     if (reason) lines.push(`⚠️ ${field(reason, MAX_REASON)}`);
-    else if (abroad.length === 0) lines.push(`⚠️ ${LATAM_WARNING}`);
+    else if (abroad.length === 0) {
+      if (latam || !emea) lines.push(`⚠️ ${LATAM_WARNING}`);
+      if (emea) lines.push(`⚠️ ${EMEA_WARNING}`);
+    }
   } else if (job.locationClass !== "us") {
     lines.push(`⚠️ ${field(reason || "Check location eligibility", MAX_REASON)}`);
   }
-  // Other places the posting is open to: named countries on a US alert, LATAM next to a country.
+  // Other places the posting is open to: named countries on a US alert, regions next to a country.
   const also = intl ? [] : abroad.map(countryLabel);
-  if (job.latam && (!intl || abroad.length > 0)) also.push("🌎 LATAM");
+  if (!intl || abroad.length > 0) {
+    if (latam) also.push(LATAM_REGION.label);
+    if (emea) also.push(EMEA_REGION.label);
+  }
   if (also.length > 0) lines.push(`Also open to: ${also.join(", ")}`);
 
   if (job.salaryText?.trim()) lines.push(`💰 ${field(job.salaryText, MAX_FIELD)}`);
@@ -180,13 +198,15 @@ export function parseCallbackData(data: string): { action: JobAction; jobId: num
   return { action: m[1] === "a" ? "applied" : "skipped", jobId };
 }
 
-/** /countries keyboard: one toggle per country, ✅ when selected. */
+/** /countries keyboard: one toggle per country, ✅ when selected, two per row in COUNTRIES order. */
 export function countriesKeyboard(selected: readonly Country[]): InlineKeyboardMarkup {
-  return {
-    inline_keyboard: COUNTRIES.map((c) => [
-      { text: `${selected.includes(c) ? "✅" : "⬜"} ${countryLabel(c)}`, callback_data: `c:${c}` },
-    ]),
-  };
+  const buttons = COUNTRIES.map((c) => ({
+    text: `${selected.includes(c) ? "✅" : "⬜"} ${countryLabel(c)}`,
+    callback_data: `c:${c}`,
+  }));
+  const rows: InlineKeyboardButton[][] = [];
+  for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
+  return { inline_keyboard: rows };
 }
 
 const COUNTRY_CALLBACK_RE = /^c:([A-Z]{2})$/;

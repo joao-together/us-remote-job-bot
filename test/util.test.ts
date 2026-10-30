@@ -20,13 +20,16 @@ describe("util", () => {
     expect(atsNameList("and")).toBe("Greenhouse, Lever, Ashby and Workable");
   });
 
-  it("active hours are 12:00–24:00 UTC (08:00–20:00 US Eastern daylight time)", () => {
-    expect(ACTIVE_HOURS_UTC).toEqual({ start: 12, end: 24 });
+  it("active hours are 08:00–24:00 UTC (05:00–21:00 Brazil time)", () => {
+    expect(ACTIVE_HOURS_UTC).toEqual({ start: 8, end: 24 });
     const day = Date.UTC(2026, 9, 6);
     const at = (h: number, m = 0) => day + h * 3_600_000 + m * 60_000;
-    expect(activeWindowStart(at(11, 59))).toBeUndefined();
-    expect(activeWindowStart(at(12))).toBe(at(12));
-    expect(activeWindowStart(at(23, 59))).toBe(at(12));
+    expect(activeWindowStart(at(7, 59))).toBeUndefined();
+    expect(inActiveHours(at(7, 59))).toBe(false);
+    expect(activeWindowStart(at(8))).toBe(at(8));
+    expect(inActiveHours(at(8))).toBe(true);
+    expect(activeWindowStart(at(12))).toBe(at(8));
+    expect(activeWindowStart(at(23, 59))).toBe(at(8));
     expect(activeWindowStart(at(24))).toBeUndefined();
     expect(inActiveHours(at(3))).toBe(false);
     expect(inActiveHours(at(18))).toBe(true);

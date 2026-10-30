@@ -81,7 +81,7 @@ export default {
     // outside active hours (e.g. the old round-the-clock "*/15 * * * *") does nothing.
     if (controller.cron !== POLL_CRON) {
       if (!inActiveHours(controller.scheduledTime)) {
-        console.log(`scheduled: unknown cron "${controller.cron}" outside active hours (12:00–24:00 UTC), not polling`);
+        console.log(`scheduled: unknown cron "${controller.cron}" outside active hours (08:00–24:00 UTC), not polling`);
         return;
       }
       console.log(`scheduled: unknown cron "${controller.cron}", treating as poll`);

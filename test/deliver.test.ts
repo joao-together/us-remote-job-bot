@@ -1,12 +1,12 @@
 import { callbackDataOf } from "../src/core/telegram/format";
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { classifyLocation } from "../src/core/match/rules";
+import { classifyLocation, type Country } from "../src/core/match/rules";
 import { Store } from "../src/core/store/db";
 import type { DbDriver, Statement } from "../src/core/store/driver";
 import { TelegramError } from "../src/core/telegram/client";
 import { normalizeParams } from "../src/core/util";
-import { deliver } from "../src/poller/deliver";
+import { deliver, routeJob } from "../src/poller/deliver";
 import { runPoll } from "../src/poller/run";
 import ghDetailNoPay from "./fixtures/greenhouse/detail-no-pay.json";
 import ghDetailPay from "./fixtures/greenhouse/detail-pay.json";
@@ -477,6 +477,7 @@ describe("country routing", () => {
             locationReason: loc.reason ?? null,
             locationCountries: loc.countries ?? [],
             locationLatam: loc.latam ?? false,
+            locationEmea: loc.emea ?? false,
             applyUrl: `https://jobs.lever.co/acme/${boardJobId}`,
             status: "pending",
           },
@@ -496,7 +497,7 @@ describe("country routing", () => {
     return res.results.map((r) => r.user_id);
   }
 
-  it("sends a Colombia job to the owner (all four by default) but not to a US-only member", async () => {
+  it("sends a Colombia job to the owner (all five by default) but not to a US-only member", async () => {
     await t.store.inviteUser(ALICE, 1);
     await t.store.setUserCountries(ALICE, ["US"]);
     await pendingAt(["co", "Remote - Colombia"], ["us", "Remote - US"]);
@@ -525,6 +526,51 @@ describe("country routing", () => {
     expect(recipientsOf("usco")).toEqual([OWNER, BOB]);
     // The owner didn't get the LATAM job, so its owner message id is null.
     expect((await jobRows()).find((r) => r.board_job_id === "latam")).toMatchObject({ status: "sent", telegram_message_id: null });
+  });
+
+  it("sends UK and Europe/EMEA jobs to a UK-only member but not US jobs", async () => {
+    await t.store.inviteUser(ALICE, 1);
+    await t.store.inviteUser(BOB, 2);
+    await t.store.setUserCountries(OWNER, ["US"]);
+    await t.store.setUserCountries(ALICE, ["UK"]);
+    await t.store.setUserCountries(BOB, ["MX", "UK"]);
+    await pendingAt(
+      ["uk", "London, UK (Remote)"],
+      ["emea", "Remote - EMEA"],
+      ["us", "Remote - US"],
+      ["usuk", "Remote - US or UK"],
+      ["mx", "Remote - Mexico"],
+    );
+
+    const stats = await run();
+
+    expect(recipientsOf("uk")).toEqual([ALICE, BOB]);
+    expect(recipientsOf("emea")).toEqual([ALICE, BOB]);
+    expect(recipientsOf("us")).toEqual([OWNER]);
+    expect(recipientsOf("usuk")).toEqual([OWNER, ALICE, BOB]);
+    expect(recipientsOf("mx")).toEqual([BOB]);
+    expect(stats).toMatchObject({ sent: 5, unrouted: 0 });
+    const emea = t.telegram.sends.find((s) => s.html.includes("Senior Software Engineer emea<"))!;
+    expect(emea.html.split("\n")[0]).toBe("🇪🇺 <b>EUROPE/EMEA REMOTE</b>");
+    expect(emea.html).toContain("⚠️ Europe/EMEA — check UK is eligible");
+    const uk = t.telegram.sends.find((s) => s.html.includes("Senior Software Engineer uk<"))!;
+    expect(uk.html.split("\n")[0]).toBe("🇬🇧 <b>UK REMOTE</b>");
+    const usuk = t.telegram.sends.find((s) => s.html.includes("Senior Software Engineer usuk<"))!;
+    expect(usuk.html).toContain("Also open to: 🇬🇧 United Kingdom");
+  });
+
+  it("routes by routeCountries: Europe/EMEA counts as the UK, LATAM as MX/CO/AR", () => {
+    const recipients = [
+      { userId: "us", countries: ["US"] as Country[] },
+      { userId: "uk", countries: ["UK"] as Country[] },
+      { userId: "co", countries: ["CO"] as Country[] },
+    ];
+    expect(routeJob({ locationCountries: [], locationLatam: false, locationEmea: true }, recipients)).toEqual(["uk"]);
+    expect(routeJob({ locationCountries: [], locationLatam: true, locationEmea: true }, recipients)).toEqual(["uk", "co"]);
+    expect(routeJob({ locationCountries: ["US", "UK"], locationLatam: false, locationEmea: false }, recipients)).toEqual(["us", "uk"]);
+    expect(routeJob({ locationCountries: ["UK"], locationLatam: false, locationEmea: false }, recipients)).toEqual(["uk"]);
+    // No stored countries: treated as US-ambiguous.
+    expect(routeJob({ locationCountries: [], locationLatam: false, locationEmea: false }, recipients)).toEqual(["us"]);
   });
 
   it("marks a job nobody selected as sent without sending, and never sends it later", async () => {

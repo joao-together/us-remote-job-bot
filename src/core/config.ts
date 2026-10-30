@@ -16,8 +16,10 @@ export const FETCH_CONCURRENCY = 24;
 export const WIDE_SLOTS = 6;
 
 /**
- * Length of one wide slot: the poller's schedule interval. A 12-hour polling window holds 48
- * slots, a multiple of WIDE_SLOTS, so each group is still checked every 90 minutes all window long.
+ * Length of one wide slot: the poller's schedule interval. The slot comes from the clock
+ * (src/poller/run.ts), and a day holds 96 slots, a multiple of WIDE_SLOTS, so each group is
+ * checked every 90 minutes all window long; the 16-hour window holds 64 slots, so each group gets
+ * 10 or 11 checks a day.
  */
 export const WIDE_SLOT_MS = 15 * 60 * 1000;
 
@@ -41,11 +43,13 @@ export const REPOST_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export const POSTED_AGO_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Hours (UTC, [start, end)) in which the poller runs: 12:00–24:00 UTC = 09:00–21:00 Brazil time (BRT, UTC−3; 08:00–20:00 US Eastern daylight time)
- * daylight time (07:00–19:00 in winter). POLL_CRON in src/worker/dispatch.ts must match. Outside
- * these hours nothing polls, the watchdog doesn't report staleness and a stray cron doesn't poll.
+ * Hours (UTC, [start, end)) in which the poller runs: 08:00–24:00 UTC = 05:00–21:00 Brazil time
+ * (BRT, UTC−3, no daylight saving; 04:00–20:00 US Eastern daylight time, 03:00–19:00 in winter;
+ * 09:00–01:00 UK summer time). POLL_CRON in src/worker/dispatch.ts and wrangler.toml must match.
+ * Outside these hours nothing polls, the watchdog doesn't report staleness and a stray cron
+ * doesn't poll.
  */
-export const ACTIVE_HOURS_UTC = { start: 12, end: 24 } as const;
+export const ACTIVE_HOURS_UTC = { start: 8, end: 24 } as const;
 
 /**
  * Watchdog: warn when the last successful poll is older than this, counting only time inside
@@ -80,24 +84,25 @@ export const MAX_EXCLUDED_WORD_LENGTH = 40;
  * index, sqlite_sequence). Only jobs that pass matching get a row; non-matching ids are stored
  * compactly in companies.seen_ids.
  *
- * Estimates for ~1,100 fast + ~8,000 wide boards, 48 runs/day (every 15 minutes in
- * ACTIVE_HOURS_UTC):
+ * Estimates for ~1,100 fast + ~8,000 wide boards, 64 runs/day (every 15 minutes in the 16-hour
+ * ACTIVE_HOURS_UTC window):
  * - Reads per run ≈ fast rows + wide/WIDE_SLOTS rows + the not-yet-baselined batch, each read
  *   once through the companies_tier_slot index (measured: ~1 row read per selected row):
  *   1,100 + 1,350 ≈ 2,450. Job rows are read only for what changed (src/poller/run.ts): ≤2 rows
  *   per listing id not in its board's seen_ids — new ids since the last check plus stored matches
  *   still listed, U ≈ a few hundred — and repost candidates only for the 0–5 boards with a new
- *   match. ≈ 2,450 + 2U ≈ 3k–4k/run ≈ 0.15M–0.2M/day. (Before: every stored job row of every
- *   polled board twice per run, ~5M/day in production.) The hourly watchdog reads the fast tier
- *   (~1.1k) ≈ 30k/day; /status adds the wide count (~9.5k per call). Total ≈ 0.2–0.3M/day (<10% of
- *   5M). While a fresh expansion is being baselined, each run also sorts every not-yet-baselined
- *   row (≈2 reads each): ~9k boards add ≤18k reads/run for ~23 runs, ~0.3M once.
+ *   match. ≈ 2,450 + 2U ≈ 3k–4k/run ≈ 0.2M–0.26M/day. (Before: every stored job row of every
+ *   polled board twice per run, ~5M/day in production.) Delivery reads recipients and their
+ *   user_prefs once per run (a few rows per user). The hourly watchdog reads the fast tier (~1.1k)
+ *   ≈ 30k/day; /status adds the wide count (~9.5k per call). Total ≈ 0.25–0.35M/day (<10% of 5M).
+ *   While a fresh expansion is being baselined, each run also sorts every not-yet-baselined row
+ *   (≈2 reads each): ~9k boards add ≤18k reads/run for ~23 runs, ~0.3M once.
  * - Writes: one company-row write per polled board whose board changed since its last check
  *   (seen_ids), plus ~5 rows per new matching job and 1 last_match_at/tier update on that board.
- *   Fast boards: ~1,100 × a few to a few dozen changes/day ≈ 5k–25k. Wide boards are checked 8×
- *   a day, so each changes at most 8× a day; most are small or idle (~8,000 × ~0.5–2 ≈ 4k–16k),
- *   but a few hundred large non-matching boards may change nearly every check (+2k–4k). Matches:
- *   ~20–60/day ≈ 0.5k; settings ~0.3k. Total ≈ 10k–45k/day steady state.
+ *   Fast boards: ~1,100 × a few to a few dozen changes/day ≈ 5k–30k. Wide boards are checked
+ *   10–11× a day, so each changes at most that often; most are small or idle (~8,000 × ~0.5–2 ≈
+ *   4k–16k), but a few hundred large non-matching boards may change nearly every check (+3k–5k).
+ *   Matches: ~20–80/day ≈ 0.5k; settings ~0.3k. Total ≈ 12k–55k/day steady state.
  * - One-off: inserting ~8,000 new boards ≈ 32k rows (measured 4 per insert) and baselining them
  *   (row + tier-index entry, measured 2 each) ≈ 16k over ~4 hours: ≈ 48k on top of a normal day,
  *   i.e. ~60k–100k on that day. If steady state is already above ~40k/day, split the first large

@@ -51,6 +51,8 @@ export interface JobRow {
   locationCountries: Country[];
   /** A remote location is LATAM-wide (names no country). */
   locationLatam: boolean;
+  /** A remote location is Europe/EMEA-wide (and the posting doesn't name the UK). */
+  locationEmea: boolean;
   applyUrl: string;
   postedAt: number | null;
   salaryText: string | null;
@@ -163,6 +165,7 @@ export interface NewJob {
   /** See LocationResult.countries; "US" is implied by the class and not stored. */
   locationCountries?: readonly Country[];
   locationLatam?: boolean;
+  locationEmea?: boolean;
   applyUrl: string;
   postedAt?: number | null;
   salaryText?: string | null;
@@ -246,15 +249,17 @@ function toCompany(r: Raw): CompanyRow {
 
 /**
  * jobs.location_class is free TEXT, so a job's countries are stored in it as tags after the class,
- * instead of needing a new column: "<class>[+mx][+co][+ar][+latam]", tags in that order, e.g.
- * "us+mx", "us_restricted+co+ar", "intl+co", "intl+mx+ar+latam", "intl+latam". US is implied by
- * the class (us, us_restricted and ambiguous) and never stored as a tag. An intl job open to
- * Mexico only is written "mx", the spelling used before Colombia and Argentina existed, so old
- * and new rows match. Rows from before this scheme decode unchanged: "mx" -> intl {MX}, "us+mx"
- * -> us {US, MX}. Unknown tags are ignored.
+ * instead of needing a new column: "<class>[+mx][+co][+ar][+uk][+latam][+emea]", tags in that
+ * order, e.g. "us+mx", "us_restricted+co+ar", "intl+co", "intl+mx+ar+latam", "intl+latam",
+ * "intl+uk", "us+uk+emea"... ("intl+emea" for a Europe/EMEA-wide posting). US is implied by the
+ * class (us, us_restricted and ambiguous) and never stored as a tag. An intl job open to Mexico
+ * only is written "mx", the spelling used before Colombia and Argentina existed, so old and new
+ * rows match. Rows from before this scheme decode unchanged: "mx" -> intl {MX}, "us+mx" -> us
+ * {US, MX}; rows from before UK/EMEA simply have no such tags. Unknown tags are ignored.
  */
-const COUNTRY_TAGS: readonly (readonly [Country, string])[] = [["MX", "mx"], ["CO", "co"], ["AR", "ar"]];
+const COUNTRY_TAGS: readonly (readonly [Country, string])[] = [["MX", "mx"], ["CO", "co"], ["AR", "ar"], ["UK", "uk"]];
 const LATAM_TAG = "latam";
+const EMEA_TAG = "emea";
 const LEGACY_MX = "mx";
 const US_CLASSES: ReadonlySet<string> = new Set(["us", "us_restricted", "ambiguous"]);
 /** The reason stored on LATAM jobs (class "mx") before the country model: decoded as LATAM-wide. */
@@ -264,34 +269,41 @@ export interface DecodedLocation {
   locationClass: LocationClass | null;
   locationCountries: Country[];
   locationLatam: boolean;
+  locationEmea: boolean;
 }
 
 export function encodeLocationClass(
   cls: LocationClass | null | undefined,
   countries: readonly Country[] = [],
   latam = false,
+  emea = false,
 ): string | null {
   if (!cls) return null;
   const tags = COUNTRY_TAGS.filter(([c]) => countries.includes(c)).map(([, tag]) => tag);
   if (latam) tags.push(LATAM_TAG);
+  if (emea) tags.push(EMEA_TAG);
   if (cls === "intl" && tags.length === 1 && tags[0] === "mx") return LEGACY_MX;
   return [cls, ...tags].join("+");
 }
 
 export function decodeLocationClass(stored: string | null): DecodedLocation {
-  if (stored === null || stored === "") return { locationClass: null, locationCountries: [], locationLatam: false };
+  if (stored === null || stored === "") {
+    return { locationClass: null, locationCountries: [], locationLatam: false, locationEmea: false };
+  }
   const [head = "", ...tags] = stored.split("+");
   const cls = (head === LEGACY_MX ? "intl" : head) as LocationClass;
   const set = new Set<Country>();
   if (US_CLASSES.has(cls)) set.add("US");
   if (head === LEGACY_MX) set.add("MX");
   let latam = false;
+  let emea = false;
   for (const tag of tags) {
     const country = COUNTRY_TAGS.find(([, t]) => t === tag)?.[0];
     if (country) set.add(country);
     else if (tag === LATAM_TAG) latam = true;
+    else if (tag === EMEA_TAG) emea = true;
   }
-  return { locationClass: cls, locationCountries: COUNTRIES.filter((c) => set.has(c)), locationLatam: latam };
+  return { locationClass: cls, locationCountries: COUNTRIES.filter((c) => set.has(c)), locationLatam: latam, locationEmea: emea };
 }
 
 /** decodeLocationClass, plus: an old LATAM job (stored as "mx" with the old LATAM reason) is LATAM-wide. */
@@ -309,7 +321,7 @@ export function parseCountries(v: unknown): Country[] | null {
   return out.length > 0 ? out : null;
 }
 
-/** A recipient and the countries they get alerts for (all four unless they changed it). */
+/** A recipient and the countries they get alerts for (all of COUNTRIES unless they changed it). */
 export interface Recipient {
   userId: string;
   countries: Country[];
@@ -671,7 +683,7 @@ export class Store {
         job.title,
         job.normalizedTitle,
         job.locationText,
-        encodeLocationClass(job.locationClass, job.locationCountries, job.locationLatam),
+        encodeLocationClass(job.locationClass, job.locationCountries, job.locationLatam, job.locationEmea),
         job.locationReason ?? null,
         job.applyUrl,
         job.postedAt ?? null,
@@ -696,7 +708,7 @@ export class Store {
         job.title,
         job.normalizedTitle,
         job.locationText,
-        encodeLocationClass(job.locationClass, job.locationCountries, job.locationLatam),
+        encodeLocationClass(job.locationClass, job.locationCountries, job.locationLatam, job.locationEmea),
         job.locationReason ?? null,
         job.applyUrl,
         job.postedAt ?? null,
@@ -1054,7 +1066,7 @@ export class Store {
     };
   }
 
-  /** The countries `userId` gets alerts for; all four when they never changed it. */
+  /** The countries `userId` gets alerts for; all of COUNTRIES when they never changed it. */
   async getUserCountries(userId: string): Promise<Country[]> {
     const rows = await this.driver.query<{ countries: string }>({
       sql: "SELECT countries FROM user_prefs WHERE user_id = ?",

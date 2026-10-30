@@ -91,15 +91,54 @@ describe("jobs", () => {
     ]);
   });
 
+  it("round-trips UK and Europe/EMEA tags in the order +mx +co +ar +uk +latam +emea", async () => {
+    const c = await addCompany();
+    await store.runBatch([
+      store.stmtInsertJob(job(c, "a", { locationClass: "intl", locationCountries: ["UK"] })),
+      store.stmtInsertJob(job(c, "b", { locationClass: "intl", locationCountries: [], locationEmea: true, locationReason: "Europe/EMEA — check UK is eligible" })),
+      store.stmtInsertJob(job(c, "c", { locationCountries: ["US", "UK"] })),
+      store.stmtInsertJob(job(c, "d", { locationCountries: ["US"], locationEmea: true })),
+      store.stmtInsertJob(job(c, "e", { locationClass: "intl", locationCountries: ["UK", "AR", "MX", "CO"], locationLatam: true, locationEmea: true })),
+      store.stmtInsertJob(job(c, "f", { locationClass: "intl", locationCountries: ["MX", "UK"] })),
+    ]);
+    const stored = await env.DB.prepare("SELECT location_class FROM jobs ORDER BY id").all();
+    expect(stored.results.map((r) => r.location_class)).toEqual([
+      "intl+uk", "intl+emea", "us+uk", "us+emea", "intl+mx+co+ar+uk+latam+emea", "intl+mx+uk",
+    ]);
+    const rows = await store.listPending();
+    expect(rows.map((r) => [r.locationClass, r.locationCountries, r.locationLatam, r.locationEmea])).toEqual([
+      ["intl", ["UK"], false, false],
+      ["intl", [], false, true],
+      ["us", ["US", "UK"], false, false],
+      ["us", ["US"], false, true],
+      ["intl", ["MX", "CO", "AR", "UK"], true, true],
+      ["intl", ["MX", "UK"], false, false],
+    ]);
+  });
+
+  it("decodes UK/EMEA tags and keeps every older spelling working", () => {
+    expect(decodeLocationClass("intl+uk")).toEqual({ locationClass: "intl", locationCountries: ["UK"], locationLatam: false, locationEmea: false });
+    expect(decodeLocationClass("intl+emea")).toEqual({ locationClass: "intl", locationCountries: [], locationLatam: false, locationEmea: true });
+    expect(decodeLocationClass("ambiguous+uk+emea")).toEqual({ locationClass: "ambiguous", locationCountries: ["US", "UK"], locationLatam: false, locationEmea: true });
+    // Tag order doesn't matter when reading.
+    expect(decodeLocationClass("intl+emea+uk+co")).toEqual({ locationClass: "intl", locationCountries: ["CO", "UK"], locationLatam: false, locationEmea: true });
+    // Rows written before UK existed decode as before, with no UK and no EMEA.
+    expect(decodeLocationClass("intl+mx+ar+latam")).toEqual({ locationClass: "intl", locationCountries: ["MX", "AR"], locationLatam: true, locationEmea: false });
+    expect(decodeLocationClass("us_restricted+co")).toEqual({ locationClass: "us_restricted", locationCountries: ["US", "CO"], locationLatam: false, locationEmea: false });
+    expect(encodeLocationClass("intl", ["MX"], false, false)).toBe("mx");
+    expect(encodeLocationClass("intl", ["MX"], false, true)).toBe("intl+mx+emea");
+    expect(encodeLocationClass("us", ["US", "UK"], true, true)).toBe("us+uk+latam+emea");
+  });
+
   it("decodes values stored before the country model unchanged", () => {
-    expect(decodeLocationClass("us")).toEqual({ locationClass: "us", locationCountries: ["US"], locationLatam: false });
-    expect(decodeLocationClass("us_restricted")).toEqual({ locationClass: "us_restricted", locationCountries: ["US"], locationLatam: false });
-    expect(decodeLocationClass("ambiguous")).toEqual({ locationClass: "ambiguous", locationCountries: ["US"], locationLatam: false });
-    expect(decodeLocationClass("mx")).toEqual({ locationClass: "intl", locationCountries: ["MX"], locationLatam: false });
-    expect(decodeLocationClass("us+mx")).toEqual({ locationClass: "us", locationCountries: ["US", "MX"], locationLatam: false });
-    expect(decodeLocationClass("us_restricted+mx")).toEqual({ locationClass: "us_restricted", locationCountries: ["US", "MX"], locationLatam: false });
-    expect(decodeLocationClass(null)).toEqual({ locationClass: null, locationCountries: [], locationLatam: false });
-    expect(decodeLocationClass("us+zz")).toEqual({ locationClass: "us", locationCountries: ["US"], locationLatam: false });
+    expect(decodeLocationClass("us")).toEqual({ locationClass: "us", locationCountries: ["US"], locationLatam: false, locationEmea: false });
+    expect(decodeLocationClass("us_restricted")).toEqual({ locationClass: "us_restricted", locationCountries: ["US"], locationLatam: false, locationEmea: false });
+    expect(decodeLocationClass("ambiguous")).toEqual({ locationClass: "ambiguous", locationCountries: ["US"], locationLatam: false, locationEmea: false });
+    expect(decodeLocationClass("mx")).toEqual({ locationClass: "intl", locationCountries: ["MX"], locationLatam: false, locationEmea: false });
+    expect(decodeLocationClass("us+mx")).toEqual({ locationClass: "us", locationCountries: ["US", "MX"], locationLatam: false, locationEmea: false });
+    expect(decodeLocationClass("us_restricted+mx")).toEqual({ locationClass: "us_restricted", locationCountries: ["US", "MX"], locationLatam: false, locationEmea: false });
+    expect(decodeLocationClass(null)).toEqual({ locationClass: null, locationCountries: [], locationLatam: false, locationEmea: false });
+    expect(decodeLocationClass("us+zz")).toEqual({ locationClass: "us", locationCountries: ["US"], locationLatam: false, locationEmea: false });
     expect(encodeLocationClass("intl", ["MX"])).toBe("mx");
     expect(encodeLocationClass("us", ["US"])).toBe("us");
     expect(encodeLocationClass(null, ["MX"])).toBeNull();
@@ -439,9 +478,9 @@ describe("users", () => {
 });
 
 describe("country preferences", () => {
-  const ALL = ["US", "MX", "CO", "AR"];
+  const ALL = ["US", "MX", "CO", "AR", "UK"];
 
-  it("defaults everyone, the owner included, to all four countries", async () => {
+  it("defaults everyone, the owner included, to all five countries", async () => {
     expect(await store.getUserCountries("1001")).toEqual(ALL);
     expect(await store.getUserCountries("300")).toEqual(ALL);
   });
@@ -457,7 +496,7 @@ describe("country preferences", () => {
     expect(raw).toEqual({ countries: "CO" });
   });
 
-  it("treats a malformed stored selection as all four", async () => {
+  it("treats a malformed stored selection as all five", async () => {
     await env.DB.prepare("INSERT INTO user_prefs (user_id, countries) VALUES ('300', 'xx,')").run();
     expect(await store.getUserCountries("300")).toEqual(ALL);
     expect(parseCountries("us, co")).toEqual(["US", "CO"]);

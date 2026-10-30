@@ -709,42 +709,51 @@ describe("/countries", () => {
     await store.inviteUser(String(MEMBER));
   });
 
-  it("shows all four countries selected by default, for the owner and members", async () => {
+  it("shows all five countries selected by default, two per row, for the owner and members", async () => {
     for (const from of [OWNER, MEMBER]) {
       await send("/countries", { from });
       const last = tg.sent.at(-1)!;
       expect(last.chatId).toBe(from);
       expect(last.html).toContain("Countries for your alerts");
-      expect(checked(last.markup)).toEqual(["c:US", "c:MX", "c:CO", "c:AR"]);
-      expect(last.markup!.inline_keyboard.flat().map((b) => b.text)).toEqual([
-        "✅ 🇺🇸 United States",
-        "✅ 🇲🇽 Mexico",
-        "✅ 🇨🇴 Colombia",
-        "✅ 🇦🇷 Argentina",
+      expect(checked(last.markup)).toEqual(["c:US", "c:MX", "c:CO", "c:AR", "c:UK"]);
+      expect(last.markup!.inline_keyboard.map((row) => row.map((b) => b.text))).toEqual([
+        ["✅ 🇺🇸 United States", "✅ 🇲🇽 Mexico"],
+        ["✅ 🇨🇴 Colombia", "✅ 🇦🇷 Argentina"],
+        ["✅ 🇬🇧 United Kingdom"],
       ]);
     }
   });
 
+  it("toggles the United Kingdom off and on", async () => {
+    await tap("c:UK", MEMBER);
+    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "MX", "CO", "AR"]);
+    expect(tg.answers.at(-1)).toEqual({ id: "cb1", text: "🇬🇧 United Kingdom off" });
+    expect(checked(tg.edits.at(-1)!.markup)).toEqual(["c:US", "c:MX", "c:CO", "c:AR"]);
+    await tap("c:UK", MEMBER);
+    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "MX", "CO", "AR", "UK"]);
+    expect(tg.answers.at(-1)?.text).toBe("🇬🇧 United Kingdom on");
+  });
+
   it("toggles a country off and on, editing the keyboard in place", async () => {
     await tap("c:MX", MEMBER);
-    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "CO", "AR"]);
+    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "CO", "AR", "UK"]);
     expect(tg.answers.at(-1)).toEqual({ id: "cb1", text: "🇲🇽 Mexico off" });
     expect(tg.edits.at(-1)).toMatchObject({ chatId: MEMBER, messageId: 77 });
-    expect(checked(tg.edits.at(-1)!.markup)).toEqual(["c:US", "c:CO", "c:AR"]);
+    expect(checked(tg.edits.at(-1)!.markup)).toEqual(["c:US", "c:CO", "c:AR", "c:UK"]);
 
     await tap("c:MX", MEMBER);
-    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "MX", "CO", "AR"]);
+    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "MX", "CO", "AR", "UK"]);
     expect(tg.answers.at(-1)?.text).toBe("🇲🇽 Mexico on");
     // Each user's selection is their own.
     await tap("c:US");
-    expect(await store.getUserCountries(String(OWNER))).toEqual(["MX", "CO", "AR"]);
-    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "MX", "CO", "AR"]);
+    expect(await store.getUserCountries(String(OWNER))).toEqual(["MX", "CO", "AR", "UK"]);
+    expect(await store.getUserCountries(String(MEMBER))).toEqual(["US", "MX", "CO", "AR", "UK"]);
     await send("/countries", { from: MEMBER });
-    expect(checked(tg.sent.at(-1)!.markup)).toEqual(["c:US", "c:MX", "c:CO", "c:AR"]);
+    expect(checked(tg.sent.at(-1)!.markup)).toEqual(["c:US", "c:MX", "c:CO", "c:AR", "c:UK"]);
   });
 
   it("refuses to deselect the last country", async () => {
-    for (const c of ["US", "MX", "CO"]) await tap(`c:${c}`);
+    for (const c of ["US", "MX", "CO", "UK"]) await tap(`c:${c}`);
     expect(await store.getUserCountries(String(OWNER))).toEqual(["AR"]);
     const edits = tg.edits.length;
     await tap("c:AR");
@@ -756,7 +765,7 @@ describe("/countries", () => {
   it("ignores country buttons from unknown users and rejects unknown codes", async () => {
     await tap("c:US", STRANGER);
     expect(tg.answers).toEqual([]);
-    expect(await store.getUserCountries(String(STRANGER))).toEqual(["US", "MX", "CO", "AR"]);
+    expect(await store.getUserCountries(String(STRANGER))).toEqual(["US", "MX", "CO", "AR", "UK"]);
     await tap("c:BR");
     expect(tg.answers.at(-1)?.text).toBe("Unknown button");
   });
@@ -767,8 +776,10 @@ describe("/countries", () => {
   });
 
   it("shows the requester's countries in /status", async () => {
-    expect(await send("/status")).toContain("Your countries: 🇺🇸 🇲🇽 🇨🇴 🇦🇷 (change with /countries)");
+    expect(await send("/status")).toContain("Your countries: 🇺🇸 🇲🇽 🇨🇴 🇦🇷 🇬🇧 (change with /countries)");
     await store.setUserCountries(String(MEMBER), ["US", "CO"]);
     expect(await send("/status", { from: MEMBER })).toContain("Your countries: 🇺🇸 🇨🇴 (change with /countries)");
+    await store.setUserCountries(String(MEMBER), ["UK"]);
+    expect(await send("/status", { from: MEMBER })).toContain("Your countries: 🇬🇧 (change with /countries)");
   });
 });

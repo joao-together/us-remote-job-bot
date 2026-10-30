@@ -2,14 +2,17 @@ import type { NormalizedJob } from "../ats/types";
 import { MAX_EXCLUDED_WORD_LENGTH } from "../config";
 
 /** Countries a remote posting can be open to, in display order. */
-export const COUNTRIES = ["US", "MX", "CO", "AR"] as const;
+export const COUNTRIES = ["US", "MX", "CO", "AR", "UK"] as const;
 export type Country = (typeof COUNTRIES)[number];
 /** What a LATAM-wide posting (no country named) counts as when routing alerts. */
 export const LATAM_COUNTRIES: readonly Country[] = ["MX", "CO", "AR"];
+/** What a Europe/EMEA-wide posting (UK not named) counts as when routing alerts. */
+export const EMEA_COUNTRIES: readonly Country[] = ["UK"];
 
 /**
  * - us / us_restricted: remote in the US (all states / only some); ambiguous: may be US ("Remote").
- * - intl: remote in Mexico, Colombia and/or Argentina, or LATAM-wide, and not in the US.
+ * - intl: remote in Mexico, Colombia, Argentina and/or the UK, or LATAM-wide or Europe/EMEA-wide,
+ *   and not in the US.
  * - non_us / onsite: fail matching.
  */
 export type LocationClass = "us" | "us_restricted" | "intl" | "ambiguous" | "non_us" | "onsite";
@@ -19,17 +22,29 @@ export interface LocationResult {
   reason?: string;
   /**
    * Passing classes only: the countries the posting is remote in, in COUNTRIES order. "US" for
-   * us, us_restricted and ambiguous; plus MX/CO/AR from any remote location naming them.
+   * us, us_restricted and ambiguous; plus MX/CO/AR/UK from any remote location naming them.
    */
   countries?: Country[];
-  /** Passing classes only, and only when true: a remote location is LATAM-wide (names no country). */
+  /**
+   * Passing classes only, and only when true: a remote location is LATAM-wide (names none of
+   * Mexico, Colombia or Argentina).
+   */
   latam?: boolean;
+  /**
+   * Passing classes only, and only when true: a remote location is Europe/EMEA-wide and the
+   * posting never names the UK (a posting naming the UK is simply a UK posting).
+   */
+  emea?: boolean;
 }
 
-/** The countries an alert is routed to: its own countries, with LATAM expanded to MX, CO and AR. */
-export function routeCountries(countries: readonly Country[], latam: boolean): Set<Country> {
+/**
+ * The countries an alert is routed to: its own countries, with LATAM expanded to MX, CO and AR
+ * and Europe/EMEA to UK.
+ */
+export function routeCountries(countries: readonly Country[], latam: boolean, emea = false): Set<Country> {
   const out = new Set<Country>(countries);
   if (latam) for (const c of LATAM_COUNTRIES) out.add(c);
+  if (emea) for (const c of EMEA_COUNTRIES) out.add(c);
   return out;
 }
 
@@ -210,15 +225,22 @@ const WASHINGTON_DC = phrases(["washington dc"]);
 const WEST_VIRGINIA = phrases(["west virginia"]);
 const CANADA = phrases(["canada"]);
 
-const US_TERMS = phrases(["us", "usa", "united states", "united states of america", "north america", "stateside"]);
+const US_TERMS = phrases([
+  "us", "usa", "united states", "united states of america", "north america", "stateside", "new england",
+]);
 const US_CITIES = phrases([
   "nyc", "san francisco", "sf", "bay area", "silicon valley", "seattle", "austin", "boston", "chicago",
   "los angeles", "denver", "atlanta", "miami", "dallas", "houston", "san diego", "san jose", "philadelphia",
   "portland", "pittsburgh", "minneapolis", "salt lake city", "raleigh", "nashville", "phoenix",
 ]);
+/**
+ * Places outside the US that aren't one of COUNTRIES (or a region routed to them). A lower-case
+ * "uk" stays here: only a capitalized "UK" token counts as the UK (see namesUk). Europe/EMEA
+ * terms are EMEA_TERMS.
+ */
 const NON_US_TERMS = phrases([
-  "emea", "apac", "latam", "anz", "dach", "nordics", "benelux", "cee", "europe", "european", "eu", "uk",
-  "united kingdom", "england", "scotland", "wales", "ireland", "latin america", "south america",
+  "apac", "latam", "anz", "dach", "nordics", "benelux", "cee", "uk", "new south wales",
+  "ireland", "latin america", "south america",
   "central america", "asia", "africa", "middle east", "canada", "ontario", "quebec", "british columbia",
   "alberta", "brazil", "argentina", "colombia", "chile", "peru", "uruguay", "costa rica", "ecuador",
   "india", "pakistan", "bangladesh", "sri lanka", "philippines", "vietnam", "indonesia", "malaysia",
@@ -226,7 +248,7 @@ const NON_US_TERMS = phrases([
   "israel", "uae", "turkey", "egypt", "nigeria", "kenya", "south africa", "germany", "france", "spain",
   "portugal", "italy", "netherlands", "belgium", "switzerland", "austria", "poland", "czech", "czechia",
   "romania", "bulgaria", "hungary", "greece", "serbia", "croatia", "ukraine", "sweden", "norway", "denmark",
-  "finland", "estonia", "latvia", "lithuania", "london", "berlin", "munich", "paris", "dublin", "amsterdam",
+  "finland", "estonia", "latvia", "lithuania", "berlin", "munich", "paris", "dublin", "amsterdam",
   "madrid", "barcelona", "lisbon", "warsaw", "krakow", "zurich", "stockholm", "toronto", "vancouver",
   "montreal", "bangalore", "bengaluru", "hyderabad", "pune", "chennai", "sydney", "melbourne", "tokyo",
   "tel aviv", "sao paulo", "buenos aires",
@@ -255,17 +277,37 @@ const ARGENTINA_PLACES = phrases(["argentina", "buenos aires", "caba", "rosario"
 const CORDOBA = phrases(["cordoba"]);
 const LATAM_TERMS = phrases(["latam", "latin america", "latinoamerica", "latino america"]);
 const LATAM_REASON = "LATAM — check your country is eligible";
+/**
+ * The UK by name. "England" and "Britain" never count right after "new" (New England is US; New
+ * Britain, CT), "Wales" never in "New South Wales" (Australia). A bare UK counts only as a
+ * capitalized "UK" token (or "U.K."), or as a structured country code GB/UK.
+ */
+const UK_NAMES = phrases(["united kingdom", "great britain", "scotland", "northern ireland"]);
+/**
+ * UK cities. Several share a name with US or Canadian places (Birmingham, AL; Cambridge, MA;
+ * London, ON), so a city counts only when nothing else in the location names a US state, a US
+ * place or Canada.
+ */
+const UK_CITIES: ReadonlySet<string> = new Set([
+  "london", "manchester", "edinburgh", "glasgow", "birmingham", "bristol", "leeds", "cambridge",
+  "oxford", "belfast", "cardiff",
+]);
+/** Europe or EMEA as a region: a remote posting open to Europe may include the UK. */
+const EMEA_TERMS = phrases(["emea", "europe", "european", "european union", "eu"]);
+const EMEA_REASON = "Europe/EMEA — check UK is eligible";
+const CANADA_CONTEXT = phrases(["canada", "ontario", "quebec", "british columbia", "alberta"]);
 const CANADIAN_CODES = new Set(["ON", "BC", "QC", "AB", "MB", "SK", "NS", "NB", "NL", "PE"]);
 const BROAD_REGIONS = phrases(["americas", "worldwide", "anywhere", "global", "globally"]);
 const ONSITE_TERMS = phrases(["hybrid", "onsite", "on site", "in office", "office based"]);
 
 const RANK: Record<LocationClass, number> = { us: 5, us_restricted: 4, intl: 3, ambiguous: 2, non_us: 1, onsite: 0 };
 
-/** Expands dotted abbreviations ("U.S.", "D.C.") so tokenizing doesn't split them into letters. */
+/** Expands dotted abbreviations ("U.S.", "U.K.", "D.C.") so tokenizing doesn't split them into letters. */
 function expandAbbreviations(text: string): string {
   return text
     .replace(/\bu\.\s?s\.\s?a\b\.?/gi, " USA ")
     .replace(/\bu\.\s?s\b\.?/gi, " US ")
+    .replace(/\bu\.\s?k\b\.?/gi, " UK ")
     .replace(/\bd\.\s?c\b\.?/gi, " DC ");
 }
 
@@ -282,16 +324,41 @@ interface Evidence {
   weakStates: boolean;
   usCity: boolean;
   nonUs: boolean;
-  /** MX/CO/AR named explicitly (country, code, city or state), in COUNTRIES order; never "New Mexico". */
+  /** MX/CO/AR/UK named explicitly (country, code, city or state), in COUNTRIES order; never "New Mexico". */
   named: Country[];
   /** Latin America as a region. */
   latam: boolean;
+  /** Europe/EMEA as a region. */
+  emea: boolean;
   broad: boolean;
 }
 
 /** "mexico" anywhere except right after "new" (New Mexico is a US state). */
 function namesMexico(t: string[]): boolean {
-  return t.some((tok, i) => tok === "mexico" && t[i - 1] !== "new");
+  return namesNotAfterNew(t, "mexico");
+}
+
+/** `word` anywhere except right after "new" ("New Mexico", "New England", "New Britain"). */
+function namesNotAfterNew(t: string[], word: string): boolean {
+  return t.some((tok, i) => tok === word && t[i - 1] !== "new");
+}
+
+/** The UK by name, a capitalized "UK" token or a GB/UK country code (cities are checked separately). */
+function namesUk(t: string[], raw: string[], countryCodes: string[]): boolean {
+  return (
+    hasAny(t, UK_NAMES) ||
+    namesNotAfterNew(t, "england") ||
+    namesNotAfterNew(t, "britain") ||
+    t.some((tok, i) => tok === "wales" && !(t[i - 1] === "south" && t[i - 2] === "new")) ||
+    raw.includes("UK") ||
+    countryCodes.includes("GB") ||
+    countryCodes.includes("UK")
+  );
+}
+
+/** A UK city ("London", "Cambridge"), never right after "new" ("New London, CT"). */
+function namesUkCity(t: string[]): boolean {
+  return t.some((tok, i) => UK_CITIES.has(tok) && t[i - 1] !== "new");
 }
 
 function gatherEvidence(segment: string, countryCodes: string[]): Evidence {
@@ -307,12 +374,17 @@ function gatherEvidence(segment: string, countryCodes: string[]): Evidence {
   const colombia = hasAny(t, COLOMBIA_PLACES) || countryCodes.includes("CO");
   let argentina = hasAny(t, ARGENTINA_PLACES) || countryCodes.includes("AR");
   const latam = hasAny(t, LATAM_TERMS);
+  let uk = namesUk(t, raw, countryCodes);
+  const emea = hasAny(t, EMEA_TERMS);
+  const canada = hasAny(t, CANADA_CONTEXT) || raw.some((w) => CANADIAN_CODES.has(w));
   let nonUs =
     mexico ||
     colombia ||
     argentina ||
+    uk ||
+    emea ||
+    canada ||
     hasAny(t, NON_US_TERMS) ||
-    raw.some((w) => CANADIAN_CODES.has(w)) ||
     (countryCodes.length > 0 && !countryCodes.includes("US"));
 
   const fullStates: string[] = [];
@@ -337,10 +409,13 @@ function gatherEvidence(segment: string, countryCodes: string[]): Evidence {
     argentina = true;
     codeStates = codeStates.filter((c) => c !== "AR");
   }
-  nonUs ||= argentina;
+  // A UK city counts unless a US state or place, or Canada, is named too ("Birmingham, AL",
+  // "Cambridge, MA", "London, ON").
+  if (!uk && namesUkCity(t) && !otherUs && codeStates.length === 0 && !canada) uk = true;
+  nonUs ||= argentina || uk;
 
   const states = [...new Set([...fullStates, ...codeStates])];
-  const flags: Record<Country, boolean> = { US: false, MX: mexico, CO: colombia, AR: argentina };
+  const flags: Record<Country, boolean> = { US: false, MX: mexico, CO: colombia, AR: argentina, UK: uk };
   return {
     usCountry,
     states,
@@ -349,6 +424,7 @@ function gatherEvidence(segment: string, countryCodes: string[]): Evidence {
     nonUs,
     named: COUNTRIES.filter((c) => flags[c]),
     latam,
+    emea,
     broad: hasAny(t, BROAD_REGIONS),
   };
 }
@@ -365,16 +441,18 @@ function saysRemote(t: string[]): boolean {
 interface SegmentResult {
   cls: LocationClass;
   reason?: string;
-  /** MX/CO/AR this segment is remote in (empty unless the segment is remote). */
+  /** MX/CO/AR/UK this segment is remote in (empty unless the segment is remote). */
   remoteNamed: Country[];
-  /** The segment is remote and LATAM-wide without naming one of the countries. */
+  /** The segment is remote and LATAM-wide without naming Mexico, Colombia or Argentina. */
   remoteLatam: boolean;
+  /** The segment is remote and Europe/EMEA-wide (classifyLocation drops it when the UK is named). */
+  remoteEmea: boolean;
 }
 
 /**
- * `textRemote`: some segment of the whole location text says remote. A Mexico/Colombia/Argentina
- * or LATAM segment with no remote word of its own then counts as remote ("Remote - Canada /
- * Mexico"); US segments keep the per-segment rule.
+ * `textRemote`: some segment of the whole location text says remote. A Mexico/Colombia/
+ * Argentina/UK, LATAM or Europe/EMEA segment with no remote word of its own then counts as remote
+ * ("Remote - Canada / Mexico", "Remote - US / UK"); US segments keep the per-segment rule.
  */
 function classifySegment(
   segment: string,
@@ -383,16 +461,19 @@ function classifySegment(
   textRemote: boolean,
 ): SegmentResult {
   const t = tokenize(segment);
-  if (hasAny(t, ONSITE_TERMS)) return { cls: "onsite", reason: "Hybrid or on-site", remoteNamed: [], remoteLatam: false };
+  if (hasAny(t, ONSITE_TERMS)) {
+    return { cls: "onsite", reason: "Hybrid or on-site", remoteNamed: [], remoteLatam: false, remoteEmea: false };
+  }
   const ev = gatherEvidence(segment, countryCodes);
-  const latamTarget = ev.named.length > 0 || ev.latam;
-  const remote = saysRemote(t) || jobRemote === "yes" || (textRemote && latamTarget) ? "yes" : "unknown";
+  const intlTarget = ev.named.length > 0 || ev.latam || ev.emea;
+  const remote = saysRemote(t) || jobRemote === "yes" || (textRemote && intlTarget) ? "yes" : "unknown";
   const result = classifyEvidence(t, ev, remote);
   const isRemote = remote === "yes";
   return {
     ...result,
     remoteNamed: isRemote ? ev.named : [],
-    remoteLatam: isRemote && ev.latam && ev.named.length === 0,
+    remoteLatam: isRemote && ev.latam && !ev.named.some((c) => LATAM_COUNTRIES.includes(c)),
+    remoteEmea: isRemote && ev.emea,
   };
 }
 
@@ -410,14 +491,14 @@ function classifyEvidence(t: string[], ev: Evidence, remote: "yes" | "unknown"):
       }
       return { cls: "us" };
     }
-    if (ev.named.length > 0 || ev.latam) return { cls: "intl" };
+    if (ev.named.length > 0 || ev.latam || ev.emea) return { cls: "intl" };
     if (ev.nonUs) return { cls: "non_us", reason: "Remote outside the US" };
     if (ev.broad) return { cls: "ambiguous", reason: "Location is a broad region; doesn't say US" };
     return { cls: "ambiguous", reason: "Location doesn't say US" };
   }
 
-  // Remote unknown: only a country-wide US location is worth flagging. Mexico, Colombia or
-  // Argentina without a remote signal is treated like a US city: an office job.
+  // Remote unknown: only a country-wide US location is worth flagging. Mexico, Colombia, Argentina
+  // or the UK without a remote signal is treated like a US city: an office job.
   if (ev.named.length > 0 && !ev.usCountry) return { cls: "onsite", reason: "no remote signal" };
   if (ev.nonUs && !ev.usCountry) return { cls: "non_us", reason: "Location outside the US" };
   if (ev.usCountry && !usPlace) {
@@ -430,7 +511,8 @@ function classifyEvidence(t: string[], ev: Evidence, remote: "yes" | "unknown"):
  * Classifies a posting's location. Several locations ("Remote - US / Remote - Colombia") are
  * classified one by one and the best class wins: us, then us_restricted, then intl, then
  * ambiguous. `countries` then collects US (for a US-eligible result) plus every country named by
- * a remote location, and `latam` any remote LATAM-wide location.
+ * a remote location, `latam` any remote LATAM-wide location and `emea` any remote Europe/EMEA
+ * location (dropped when the posting names the UK, which already routes to UK).
  */
 export function classifyLocation(job: LocationInput): LocationResult {
   if (job.remote === "no") return { cls: "onsite", reason: "Not remote" };
@@ -442,22 +524,33 @@ export function classifyLocation(job: LocationInput): LocationResult {
   let best: SegmentResult | undefined;
   const named = new Set<Country>();
   let latam = false;
+  let emea = false;
   for (const segment of segments) {
     const result = classifySegment(segment, job.remote, job.countryCodes, textRemote);
     for (const c of result.remoteNamed) named.add(c);
     latam ||= result.remoteLatam;
+    emea ||= result.remoteEmea;
     if (!best || RANK[result.cls] > RANK[best.cls]) best = result;
   }
   const cls = best!.cls;
   if (!locationPasses(cls)) return best!.reason === undefined ? { cls } : { cls, reason: best!.reason };
 
+  // A posting naming the UK is a UK posting: Europe/EMEA next to it routes nowhere new.
+  if (named.has("UK")) emea = false;
   if (cls !== "intl") named.add("US");
   const out: LocationResult = { cls, countries: COUNTRIES.filter((c) => named.has(c)) };
-  // An intl result only needs a warning when it is LATAM-wide with no country named.
-  const reason = cls === "intl" ? (named.size === 0 ? LATAM_REASON : undefined) : best!.reason;
+  // An intl result only needs a warning when it is region-wide (LATAM, Europe/EMEA) with no country named.
+  const reason = cls === "intl" ? (named.size === 0 ? regionReason(latam, emea) : undefined) : best!.reason;
   if (reason !== undefined) out.reason = reason;
   if (latam) out.latam = true;
+  if (emea) out.emea = true;
   return out;
+}
+
+/** The warning for a region-wide intl posting that names no country. */
+function regionReason(latam: boolean, emea: boolean): string {
+  if (emea && latam) return `${LATAM_REASON}; ${EMEA_REASON}`;
+  return emea ? EMEA_REASON : LATAM_REASON;
 }
 
 export function locationPasses(cls: LocationClass): boolean {

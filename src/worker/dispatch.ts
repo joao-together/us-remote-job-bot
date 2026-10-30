@@ -3,9 +3,9 @@ import { errorMessage, redactSecrets } from "../core/util";
 
 /**
  * Cron that starts the GitHub Actions poller (GitHub's own scheduler is unreliable): every 15
- * minutes from 12:00 to 23:45 UTC (ACTIVE_HOURS_UTC: 09:00–21:00 Brazil time).
+ * minutes from 08:00 to 23:45 UTC (ACTIVE_HOURS_UTC: 05:00–21:00 Brazil time).
  */
-export const POLL_CRON = "*/15 12-23 * * *";
+export const POLL_CRON = "*/15 8-23 * * *";
 /** Cron that runs the health watchdog. */
 export const WATCHDOG_CRON = "43 * * * *";
 /** Cron that starts the weekly company-list expansion (Mondays 06:00 UTC). */

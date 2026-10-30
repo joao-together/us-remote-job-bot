@@ -90,6 +90,9 @@ describe("formatJobAlert", () => {
     [["AR"], "🇦🇷 <b>ARGENTINA REMOTE</b>"],
     [["MX", "CO"], "🇲🇽🇨🇴 <b>MEXICO · COLOMBIA REMOTE</b>"],
     [["MX", "CO", "AR"], "🇲🇽🇨🇴🇦🇷 <b>MEXICO · COLOMBIA · ARGENTINA REMOTE</b>"],
+    [["UK"], "🇬🇧 <b>UK REMOTE</b>"],
+    [["MX", "UK"], "🇲🇽🇬🇧 <b>MEXICO · UK REMOTE</b>"],
+    [["CO", "AR", "UK"], "🇨🇴🇦🇷🇬🇧 <b>COLOMBIA · ARGENTINA · UK REMOTE</b>"],
   ] as [Country[], string][])("gives an intl job with countries %j the banner %s", (countries, banner) => {
     const html = formatJobAlert(job({ locationText: "Remote", locationClass: "intl", countries }), NOW);
     expect(html.split("\n")[0]).toBe(banner);
@@ -108,6 +111,52 @@ describe("formatJobAlert", () => {
     // Without a stored reason the warning is still shown.
     const bare = formatJobAlert(job({ locationText: "Remote - LATAM", locationClass: "intl", latam: true }), NOW);
     expect(bare).toContain("⚠️ LATAM — check your country is eligible");
+  });
+
+  it("gives a Europe/EMEA-wide job the EUROPE/EMEA banner and warning", () => {
+    const html = formatJobAlert(
+      job({ locationText: "Remote - EMEA", locationClass: "intl", countries: [], emea: true, locationReason: "Europe/EMEA — check UK is eligible" }),
+      NOW,
+    );
+    expect(html.split("\n")[0]).toBe("🇪🇺 <b>EUROPE/EMEA REMOTE</b>");
+    expect(html).toContain("📍 Remote - EMEA\n⚠️ Europe/EMEA — check UK is eligible");
+    expect(html).not.toContain("LATAM");
+    expect(html).not.toContain("Also open to");
+    // Without a stored reason the warning is still shown.
+    const bare = formatJobAlert(job({ locationText: "Remote - Europe", locationClass: "intl", emea: true }), NOW);
+    expect(bare).toContain("⚠️ Europe/EMEA — check UK is eligible");
+    expect(bare).not.toContain("LATAM");
+  });
+
+  it("combines LATAM and Europe/EMEA when no country is named", () => {
+    const html = formatJobAlert(
+      job({
+        locationText: "Remote - LATAM / EMEA",
+        locationClass: "intl",
+        countries: [],
+        latam: true,
+        emea: true,
+        locationReason: "LATAM — check your country is eligible; Europe/EMEA — check UK is eligible",
+      }),
+      NOW,
+    );
+    expect(html.split("\n")[0]).toBe("🌎🇪🇺 <b>LATAM · EUROPE/EMEA REMOTE</b>");
+    expect(html).toContain("⚠️ LATAM — check your country is eligible; Europe/EMEA — check UK is eligible");
+    const bare = formatJobAlert(job({ locationText: "x", locationClass: "intl", latam: true, emea: true }), NOW);
+    expect(bare).toContain("⚠️ LATAM — check your country is eligible\n⚠️ Europe/EMEA — check UK is eligible");
+  });
+
+  it("names Europe/EMEA and the UK as extras on a country banner and on a US alert", () => {
+    const mx = formatJobAlert(job({ locationText: "Remote - Mexico / Europe", locationClass: "intl", countries: ["MX"], emea: true }), NOW);
+    expect(mx.split("\n")[0]).toBe("🇲🇽 <b>MEXICO REMOTE</b>");
+    expect(mx).toContain("Also open to: 🇪🇺 Europe/EMEA");
+    expect(mx).not.toContain("⚠️");
+    const us = formatJobAlert(job({ locationText: "Remote - US / UK / LATAM", countries: ["US", "MX", "UK"], latam: true }), NOW);
+    expect(us.split("\n")[0]).toBe("<b>Senior Engineer</b>");
+    expect(us).toContain("Also open to: 🇲🇽 Mexico, 🇬🇧 United Kingdom, 🌎 LATAM");
+    expect(formatJobAlert(job({ countries: ["US", "UK"] }), NOW)).toContain("Also open to: 🇬🇧 United Kingdom");
+    expect(formatJobAlert(job({ countries: ["US"], emea: true }), NOW)).toContain("Also open to: 🇪🇺 Europe/EMEA");
+    expect(formatJobAlert(job({ countries: ["US"], latam: true, emea: true }), NOW)).toContain("Also open to: 🌎 LATAM, 🇪🇺 Europe/EMEA");
   });
 
   it("names LATAM as an extra on a country banner", () => {
@@ -280,17 +329,19 @@ describe("countriesKeyboard", () => {
   it("shows one toggle per country, checked when selected, with short callback data", () => {
     const kb = countriesKeyboard(["US", "CO"]);
     expect(kb.inline_keyboard.map((row) => row.map((b) => [b.text, callbackDataOf(b)!]))).toEqual([
-      [["✅ 🇺🇸 United States", "c:US"]],
-      [["⬜ 🇲🇽 Mexico", "c:MX"]],
-      [["✅ 🇨🇴 Colombia", "c:CO"]],
-      [["⬜ 🇦🇷 Argentina", "c:AR"]],
+      [["✅ 🇺🇸 United States", "c:US"], ["⬜ 🇲🇽 Mexico", "c:MX"]],
+      [["✅ 🇨🇴 Colombia", "c:CO"], ["⬜ 🇦🇷 Argentina", "c:AR"]],
+      [["⬜ 🇬🇧 United Kingdom", "c:UK"]],
     ]);
+    expect(countriesKeyboard(["UK"]).inline_keyboard[2]).toEqual([{ text: "✅ 🇬🇧 United Kingdom", callback_data: "c:UK" }]);
     for (const row of kb.inline_keyboard) for (const b of row) expect(new TextEncoder().encode(callbackDataOf(b)!).length).toBeLessThanOrEqual(64);
   });
 
   it("parses only known country buttons", () => {
     expect(parseCountryCallback("c:CO")).toBe("CO");
     expect(parseCountryCallback("c:AR")).toBe("AR");
+    expect(parseCountryCallback("c:UK")).toBe("UK");
+    expect(parseCountryCallback("c:GB")).toBeNull();
     expect(parseCountryCallback("c:BR")).toBeNull();
     expect(parseCountryCallback("c:co")).toBeNull();
     expect(parseCountryCallback("a:1")).toBeNull();

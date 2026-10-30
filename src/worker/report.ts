@@ -67,7 +67,7 @@ export function formatReport({ period, dayStart, stats, applied }: ReportInput):
   ];
   const total = Math.max(stats.applied, applied.length);
   if (total === 0) {
-    lines.push(`No applications ${period} — new matching roles are checked every 15 minutes, 09:00–21:00 Brazil time.`);
+    lines.push(`No applications ${period} — new matching roles are checked every 15 minutes, 05:00–21:00 Brazil time.`);
     return lines.join("\n");
   }
   lines.push(`<b>${capitalize(period)}'s applications:</b>`);

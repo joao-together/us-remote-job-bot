@@ -87,7 +87,7 @@ describe("detection and delivery", () => {
     boards.lever.acme.push(
       leverPosting("new", "Senior Backend Engineer"),
       leverPosting("junior", "Junior Software Engineer"),
-      leverPosting("emea", SENIOR + " II", { location: "Remote - EMEA", country: "DE" }),
+      leverPosting("emea", SENIOR + " II", { location: "Remote - Germany", country: "DE" }),
     );
     const stats = await poll();
 
@@ -174,6 +174,28 @@ describe("detection and delivery", () => {
     expect(t.telegram.sends[2]!.html).toContain("⚠️ LATAM — check your country is eligible");
     const classes = Object.fromEntries((await jobRows()).map((r) => [r.board_job_id, r.location_class]));
     expect(classes).toMatchObject({ co: "intl+co", ar: "intl+ar", latam: "intl+latam", denver: "us" });
+  });
+
+  it("sends UK and Europe/EMEA remote jobs with their banners and skips other European countries", async () => {
+    boards.lever.acme = [];
+    await addCompany(t.store, "Acme", "lever", "acme");
+    await poll();
+    boards.lever.acme.push(
+      leverPosting("uk", SENIOR, { location: "London, UK (Remote)", country: "GB" }),
+      leverPosting("emea", "Senior Backend Engineer", { location: "Remote - EMEA", country: "" }),
+      leverPosting("de", "Senior Frontend Engineer", { location: "Remote - Germany", country: "DE" }),
+      leverPosting("bham", "Senior Mobile Engineer", { location: "Birmingham, AL (Remote)", country: "US" }),
+    );
+    await poll();
+    expect(t.telegram.sends.map((s) => s.html.split("\n")[0])).toEqual([
+      "🇬🇧 <b>UK REMOTE</b>",
+      "🇪🇺 <b>EUROPE/EMEA REMOTE</b>",
+      "<b>Senior Mobile Engineer</b>",
+    ]);
+    expect(t.telegram.sends[1]!.html).toContain("⚠️ Europe/EMEA — check UK is eligible");
+    const classes = Object.fromEntries((await jobRows()).map((r) => [r.board_job_id, r.location_class]));
+    expect(classes).toMatchObject({ uk: "intl+uk", emea: "intl+emea", bham: "us" });
+    expect(classes.de).toBeUndefined();
   });
 
   it("does not re-send a known job whose title changed (AE6)", async () => {

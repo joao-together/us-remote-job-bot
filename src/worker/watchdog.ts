@@ -13,7 +13,7 @@ export interface HealthInput {
 }
 
 /** Shown in /status; keep in sync with ACTIVE_HOURS_UTC and POLL_CRON. */
-export const SCHEDULE_TEXT = "Checks run every 15 min, 09:00–21:00 Brazil time (12:00–24:00 UTC)";
+export const SCHEDULE_TEXT = "Checks run every 15 min, 05:00–21:00 Brazil time (08:00–24:00 UTC)";
 
 export function formatAgo(at: number | undefined, now: number): string {
   if (at === undefined) return "never";

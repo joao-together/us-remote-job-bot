@@ -128,7 +128,7 @@ describe("scheduled()", () => {
 
   it("uses the poll, watchdog and weekly expansion crons (keep in sync with wrangler.toml)", () => {
     expect([POLL_CRON, WATCHDOG_CRON, EXPAND_CRON, REPORT_CRON]).toEqual([
-      "*/15 12-23 * * *",
+      "*/15 8-23 * * *",
       "43 * * * *",
       "0 6 * * 1",
       "0 12 * * *",
@@ -148,13 +148,13 @@ describe("scheduled()", () => {
     log.mockRestore();
   });
 
-  it("ignores (and logs) a stale or unknown cron outside active hours (12:00–24:00 UTC)", async () => {
+  it("ignores (and logs) a stale or unknown cron outside active hours (08:00–24:00 UTC)", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await run("*/15 * * * *", Date.UTC(2026, 9, 12, 6, 0, 0));
-    await run("*/15 * * * *", Date.UTC(2026, 9, 12, 11, 59, 0));
+    await run("*/15 * * * *", Date.UTC(2026, 9, 12, 7, 59, 0));
     expect(urls).toEqual([]);
-    expect(log.mock.calls.flat().join(" ")).toContain('unknown cron "*/15 * * * *" outside active hours');
-    await run("*/15 * * * *", Date.UTC(2026, 9, 12, 12, 0, 0));
+    expect(log.mock.calls.flat().join(" ")).toContain('unknown cron "*/15 * * * *" outside active hours (08:00–24:00 UTC)');
+    await run("*/15 * * * *", Date.UTC(2026, 9, 12, 8, 0, 0));
     await run("*/15 * * * *", Date.UTC(2026, 9, 12, 23, 59, 0));
     expect(urls).toHaveLength(2);
     log.mockRestore();

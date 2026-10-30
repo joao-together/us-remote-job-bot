@@ -8,9 +8,9 @@ import { TelegramError } from "../src/core/telegram/client";
 import { buildStatus, evaluateHealth, runWatchdog, SCHEDULE_TEXT } from "../src/worker/watchdog";
 
 const HOUR = 60 * 60 * 1000;
-// 17:00 UTC: inside active hours (12:00–24:00 UTC), well past the window's first 90 minutes.
+// 17:00 UTC: inside active hours (08:00–24:00 UTC), well past the window's first 90 minutes.
 const T0 = Date.UTC(2026, 9, 6, 17, 0, 0);
-const WINDOW_START = Date.UTC(2026, 9, 6, 12, 0, 0);
+const WINDOW_START = Date.UTC(2026, 9, 6, 8, 0, 0);
 const MIN = 60 * 1000;
 const OWNER = "42";
 
@@ -119,12 +119,15 @@ describe("evaluateHealth in active hours", () => {
       counts: counts(),
       now,
     }).warnings.filter((w) => w.includes("No successful job check"));
-  const lastNight = WINDOW_START - 15 * MIN; // yesterday's last run, 23:45 UTC
+  const lastNight = Date.UTC(2026, 9, 5, 23, 45, 0); // yesterday's last run, 23:45 UTC
 
   it("never reports staleness outside active hours, but still reports failing boards", () => {
     const night = Date.UTC(2026, 9, 6, 3, 0, 0);
     expect(stale(WINDOW_START - 27 * HOUR, night)).toEqual([]);
     expect(stale(undefined, night)).toEqual([]);
+    // 07:59 UTC is still outside the window (it opens at 08:00 UTC = 05:00 Brazil time).
+    expect(stale(WINDOW_START - 27 * HOUR, WINDOW_START - MIN)).toEqual([]);
+    expect(stale(WINDOW_START - 27 * HOUR, WINDOW_START + 3 * HOUR + MIN)).toHaveLength(1);
     const { warnings } = evaluateHealth({
       settings: { paused: false, excludedWords: [], lastSuccessfulPollAt: lastNight - 24 * HOUR },
       counts: counts({ active: 30, fast: 30, failing: 9 }),
@@ -141,7 +144,7 @@ describe("evaluateHealth in active hours", () => {
     expect(stale(lastNight, WINDOW_START + 3 * HOUR)).toEqual([]);
     // More than 3h of active time without a poll.
     expect(stale(lastNight, WINDOW_START + 3 * HOUR + MIN)).toEqual([
-      "⚠️ No successful job check for 3h. Check the GitHub Actions 'Poll job boards' workflow (disabled? out of minutes? bad secret?).",
+      "⚠️ No successful job check for 11h. Check the GitHub Actions 'Poll job boards' workflow (disabled? out of minutes? bad secret?).",
     ]);
     expect(stale(undefined, WINDOW_START + 90 * MIN)).toHaveLength(1);
   });
@@ -259,8 +262,8 @@ describe("buildStatus", () => {
     expect(html).toContain("Last successful check: 2h ago");
     expect(html).toContain("Last poll: 8 boards ok, 2 failed, 4 jobs sent");
     expect(html).toContain("Running");
-    expect(html).toContain("Checks run every 15 min, 09:00–21:00 Brazil time (12:00–24:00 UTC)");
-    expect(SCHEDULE_TEXT).toBe("Checks run every 15 min, 09:00–21:00 Brazil time (12:00–24:00 UTC)");
+    expect(html).toContain("Checks run every 15 min, 05:00–21:00 Brazil time (08:00–24:00 UTC)");
+    expect(SCHEDULE_TEXT).toBe("Checks run every 15 min, 05:00–21:00 Brazil time (08:00–24:00 UTC)");
   });
 
   it("shows the tier split and lists only failing fast-tier companies", async () => {

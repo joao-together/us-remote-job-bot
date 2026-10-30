@@ -138,6 +138,7 @@ function classifyNew({ job, match }: FreshJob, company: CompanyRow, onBoard: Set
     locationReason: match.location.reason ?? null,
     locationCountries: match.location.countries ?? [],
     locationLatam: match.location.latam ?? false,
+    locationEmea: match.location.emea ?? false,
     status,
   };
 }

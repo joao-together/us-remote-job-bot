@@ -34,9 +34,11 @@ describe("plan scenarios", () => {
     });
   });
 
-  it("Covers AE2. 'Remote – EMEA' is non_us", () => {
-    expect(loc("Remote – EMEA").cls).toBe("non_us");
-    expect(matchesTarget(job("Senior Backend Engineer", "Remote – EMEA")).pass).toBe(false);
+  it("Covers AE2 (revised: Europe/EMEA routes to UK). 'Remote – EMEA' is intl EMEA; 'Remote – Germany' is non_us", () => {
+    expect(loc("Remote – EMEA")).toEqual({ cls: "intl", countries: [], emea: true, reason: "Europe/EMEA — check UK is eligible" });
+    expect(matchesTarget(job("Senior Backend Engineer", "Remote – EMEA")).pass).toBe(true);
+    expect(loc("Remote – Germany").cls).toBe("non_us");
+    expect(matchesTarget(job("Senior Backend Engineer", "Remote – Germany")).pass).toBe(false);
   });
 
   it("Covers AE3 (widened). Staff and Sr. Frontend are both accepted", () => {
@@ -261,15 +263,16 @@ describe("classifyLocation", () => {
     ["Remote - US; Remote - Canada", "yes", [], "us"],
     ["Remote in CA, NY or TX", "yes", [], "us_restricted"],
     ["US Remote (Washington, Oregon only)", "yes", [], "us_restricted"],
-    ["Remote – EMEA", "yes", [], "non_us"],
+    ["Remote – EMEA", "yes", [], "intl"],
     ["Remote - Canada", "yes", [], "non_us"],
     ["Remote, LATAM", "yes", [], "intl"],
     ["Remote - Latin America", "yes", [], "intl"],
     ["Bengaluru, India", "unknown", [], "non_us"],
     ["Berlin, DE", "yes", [], "non_us"],
     ["Toronto, ON, CA", "yes", [], "non_us"],
-    ["Remote", "yes", ["GB"], "non_us"],
-    ["United Kingdom", "unknown", [], "non_us"],
+    ["Remote", "yes", ["GB"], "intl"],
+    ["United Kingdom", "unknown", [], "onsite"],
+    ["Remote", "yes", ["DE"], "non_us"],
     ["USA", "unknown", [], "ambiguous"],
     ["New York, NY", "unknown", [], "onsite"],
     ["", "unknown", [], "onsite"],
@@ -298,14 +301,23 @@ describe("classifyLocation", () => {
   });
 });
 
-type CountryCase = [text: string, remote: RemoteSignal, codes: string[], cls: LocationClass, countries: Country[], latam: boolean];
+type CountryCase = [
+  text: string,
+  remote: RemoteSignal,
+  codes: string[],
+  cls: LocationClass,
+  countries: Country[],
+  latam: boolean,
+  emea?: boolean,
+];
 
 function expectCountries(cases: CountryCase[]) {
-  it.each(cases)("%j (remote %s, codes %j) -> %s %j, latam %s", (text, remote, codes, cls, countries, latam) => {
+  it.each(cases)("%j (remote %s, codes %j) -> %s %j, latam %s, emea %s", (text, remote, codes, cls, countries, latam, emea = false) => {
     const result = loc(text, remote, codes);
     expect(result.cls).toBe(cls);
     expect(result.countries ?? []).toEqual(countries);
     expect(result.latam ?? false).toBe(latam);
+    expect(result.emea ?? false).toBe(emea);
   });
 }
 
@@ -327,7 +339,7 @@ describe("Mexico-remote locations", () => {
     ["Latin America - Remote", "unknown", [], "intl", [], true],
     ["Remoto - Latinoamérica / Remote", "unknown", [], "intl", [], true],
     ["Remote – LATAM / Remote", "unknown", [], "intl", [], true],
-    ["Remote - LATAM / EMEA", "unknown", [], "intl", [], true],
+    ["Remote - LATAM / EMEA", "unknown", [], "intl", [], true, true],
     ["Remote - Canada / Mexico", "unknown", [], "intl", ["MX"], false],
     ["Remote - Canada / Mexico", "yes", [], "intl", ["MX"], false],
     ["Remote - Brazil", "unknown", [], "non_us", [], false],
@@ -419,7 +431,7 @@ describe("Colombia, Argentina and multi-country locations", () => {
     ["Remote - Mexico / Colombia / Argentina", "unknown", [], "intl", ["MX", "CO", "AR"], false],
     ["Remote (Mexico, Colombia or Argentina)", "unknown", [], "intl", ["MX", "CO", "AR"], false],
     ["Remote - Brazil / Remote - Argentina", "unknown", [], "intl", ["AR"], false],
-    ["Remote - Colombia / EMEA", "unknown", [], "intl", ["CO"], false],
+    ["Remote - Colombia / EMEA", "unknown", [], "intl", ["CO"], false, true],
     ["Remote - LATAM / Remote - Colombia", "unknown", [], "intl", ["CO"], true],
     // LATAM-wide only.
     ["Remote - LATAM", "yes", [], "intl", [], true],
@@ -444,6 +456,128 @@ describe("Colombia, Argentina and multi-country locations", () => {
     expect([...routeCountries([], true)]).toEqual(["MX", "CO", "AR"]);
     expect([...routeCountries(["US"], true)]).toEqual(["US", "MX", "CO", "AR"]);
     expect([...routeCountries(["US", "CO"], false)]).toEqual(["US", "CO"]);
+  });
+});
+
+describe("United Kingdom and Europe/EMEA locations", () => {
+  const cases: CountryCase[] = [
+    // The UK by name, abbreviation or code.
+    ["Remote - United Kingdom", "unknown", [], "intl", ["UK"], false],
+    ["Remote - UK", "unknown", [], "intl", ["UK"], false],
+    ["UK (Remote)", "unknown", [], "intl", ["UK"], false],
+    ["Remote, U.K.", "unknown", [], "intl", ["UK"], false],
+    ["Remote - u.k.", "unknown", [], "intl", ["UK"], false],
+    ["Great Britain - Remote", "unknown", [], "intl", ["UK"], false],
+    ["Remote - Britain", "unknown", [], "intl", ["UK"], false],
+    ["Remote - England", "unknown", [], "intl", ["UK"], false],
+    ["Scotland (Remote)", "unknown", [], "intl", ["UK"], false],
+    ["Remote - Wales", "unknown", [], "intl", ["UK"], false],
+    ["Belfast, Northern Ireland - Remote", "unknown", [], "intl", ["UK"], false],
+    ["Remote", "yes", ["GB"], "intl", ["UK"], false],
+    ["Remote", "yes", ["UK"], "intl", ["UK"], false],
+    ["", "yes", ["GB"], "intl", ["UK"], false],
+    ["UNITED KINGDOM", "yes", [], "intl", ["UK"], false],
+    // UK cities.
+    ["London (Remote)", "unknown", [], "intl", ["UK"], false],
+    ["London, UK", "yes", [], "intl", ["UK"], false],
+    ["Remote - Manchester", "unknown", [], "intl", ["UK"], false],
+    ["Edinburgh - Remote", "unknown", [], "intl", ["UK"], false],
+    ["Remote - Glasgow", "unknown", [], "intl", ["UK"], false],
+    ["Birmingham, England (Remote)", "unknown", [], "intl", ["UK"], false],
+    ["Remote - Birmingham", "unknown", [], "intl", ["UK"], false],
+    ["Bristol - Remote", "unknown", [], "intl", ["UK"], false],
+    ["Remote - Leeds", "unknown", [], "intl", ["UK"], false],
+    ["Cambridge, UK (Remote)", "unknown", [], "intl", ["UK"], false],
+    ["Remote - Oxford", "unknown", [], "intl", ["UK"], false],
+    ["Cardiff, Wales - Remote", "unknown", [], "intl", ["UK"], false],
+    // Same-name US and Canadian places.
+    ["Birmingham, AL", "yes", [], "us", ["US"], false],
+    ["Remote - Birmingham, Alabama", "unknown", [], "us", ["US"], false],
+    ["Cambridge, MA", "yes", [], "us", ["US"], false],
+    ["Remote - Cambridge, Massachusetts", "unknown", [], "us", ["US"], false],
+    ["Manchester, NH (Remote)", "unknown", [], "us", ["US"], false],
+    ["New London, CT (Remote)", "unknown", [], "us", ["US"], false],
+    ["London, ON", "yes", [], "non_us", [], false],
+    ["Remote - London, Ontario", "unknown", [], "non_us", [], false],
+    ["London, Ontario, Canada (Remote)", "unknown", [], "non_us", [], false],
+    ["Remote - New England", "unknown", [], "us", ["US"], false],
+    ["New England", "yes", [], "us", ["US"], false],
+    ["Remote - New South Wales", "unknown", [], "non_us", [], false],
+    ["Remote - New Britain, CT", "unknown", [], "us", ["US"], false],
+    // No remote signal: an office job.
+    ["London", "unknown", [], "onsite", [], false],
+    ["Manchester, UK", "unknown", [], "onsite", [], false],
+    ["Hybrid - London", "yes", [], "onsite", [], false],
+    // A lower-case "uk" alone stays outside the US, as before.
+    ["Remote - uk", "unknown", [], "non_us", [], false],
+    // Europe/EMEA without the UK: routed to UK with a warning.
+    ["Remote - EMEA", "unknown", [], "intl", [], false, true],
+    ["Remote - Europe", "unknown", [], "intl", [], false, true],
+    ["Remote - EU", "yes", [], "intl", [], false, true],
+    ["European Union (Remote)", "unknown", [], "intl", [], false, true],
+    ["Remote - Europe (CET)", "unknown", [], "intl", [], false, true],
+    ["Europe", "unknown", [], "non_us", [], false],
+    ["Remote - EU (DE, FR)", "unknown", [], "intl", [], false, true],
+    // The UK named next to Europe: UK only, no EMEA flag.
+    ["Remote (UK or EU)", "unknown", [], "intl", ["UK"], false],
+    ["UK & EU - Remote", "unknown", [], "intl", ["UK"], false],
+    ["Remote - Europe/UK", "unknown", [], "intl", ["UK"], false],
+    ["Remote - UK / Remote - Europe", "unknown", [], "intl", ["UK"], false],
+    ["Remote - EMEA", "yes", ["GB"], "intl", ["UK"], false],
+    // Other European countries alone stay outside.
+    ["Remote - Germany", "unknown", [], "non_us", [], false],
+    ["Spain", "yes", [], "non_us", [], false],
+    ["Remote - Ireland", "unknown", [], "non_us", [], false],
+    ["Berlin, Germany (Remote)", "unknown", [], "non_us", [], false],
+    ["Remote - DACH", "unknown", [], "non_us", [], false],
+    // Several countries.
+    ["Remote - US or UK", "unknown", [], "us", ["US", "UK"], false],
+    ["Remote - US / Remote - UK", "unknown", [], "us", ["US", "UK"], false],
+    ["Remote - US / London", "unknown", [], "us", ["US", "UK"], false],
+    ["London, UK / New York, NY", "yes", [], "us", ["US", "UK"], false],
+    ["Remote - US / Remote - EMEA", "unknown", [], "us", ["US"], false, true],
+    ["Remote - UK / Mexico", "unknown", [], "intl", ["MX", "UK"], false],
+    ["Remote - Colombia / UK", "unknown", [], "intl", ["CO", "UK"], false],
+    ["Remote (UK or LATAM)", "unknown", [], "intl", ["UK"], true],
+    ["Remote - Mexico / Europe", "unknown", [], "intl", ["MX"], false, true],
+    ["Remote - UK / Remote - Germany", "unknown", [], "intl", ["UK"], false],
+    ["Remote - UK / Ireland", "unknown", [], "intl", ["UK"], false],
+  ];
+  expectCountries(cases);
+
+  it("covers at least 30 location strings", () => {
+    expect(cases.length).toBeGreaterThanOrEqual(30);
+  });
+
+  it("warns on region-only postings and not when a country is named", () => {
+    expect(loc("Remote - Europe", "unknown")).toEqual({
+      cls: "intl",
+      countries: [],
+      emea: true,
+      reason: "Europe/EMEA — check UK is eligible",
+    });
+    expect(loc("Remote - LATAM / EMEA", "unknown")).toEqual({
+      cls: "intl",
+      countries: [],
+      latam: true,
+      emea: true,
+      reason: "LATAM — check your country is eligible; Europe/EMEA — check UK is eligible",
+    });
+    expect(loc("Remote - UK", "unknown")).toEqual({ cls: "intl", countries: ["UK"] });
+    expect(loc("Remote - US or UK", "unknown")).toEqual({ cls: "us", countries: ["US", "UK"] });
+  });
+
+  it("matches a UK posting end to end", () => {
+    expect(matchesTarget(job("Senior Backend Engineer", "London, UK (Remote)", "unknown"))).toEqual({
+      pass: true,
+      location: { cls: "intl", countries: ["UK"] },
+    });
+  });
+
+  it("routes Europe/EMEA to the UK", () => {
+    expect([...routeCountries([], false, true)]).toEqual(["UK"]);
+    expect([...routeCountries(["US"], true, true)]).toEqual(["US", "MX", "CO", "AR", "UK"]);
+    expect([...routeCountries(["UK"], false)]).toEqual(["UK"]);
   });
 });
 
