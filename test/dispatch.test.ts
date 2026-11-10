@@ -91,6 +91,7 @@ describe("dispatchWorkflow", () => {
 describe("scheduled()", () => {
   const T = Date.UTC(2026, 9, 12, 6, 0, 0);
   let urls: string[];
+  let githubStatus: number;
   let bodies: { chat_id: unknown; text: string }[];
 
   beforeEach(async () => {
@@ -102,11 +103,12 @@ describe("scheduled()", () => {
       env.DB.prepare("DELETE FROM settings"),
     ]);
     urls = [];
+    githubStatus = 204;
     bodies = [];
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       urls.push(url);
-      if (url.startsWith("https://api.github.com/")) return new Response(null, { status: 204 });
+      if (url.startsWith("https://api.github.com/")) return new Response(githubStatus === 204 ? null : "{\"message\":\"Bad credentials\"}", { status: githubStatus });
       const body = JSON.parse(String(init?.body ?? "{}")) as { chat_id: unknown; text: string };
       bodies.push(body);
       if (String(body.chat_id) === "3003") {
@@ -138,6 +140,33 @@ describe("scheduled()", () => {
   it("starts the poller on the 15-minute cron", async () => {
     await run(POLL_CRON);
     expect(urls).toEqual(["https://api.github.com/repos/me/bot/actions/workflows/poll.yml/dispatches"]);
+  });
+
+  it("tells the owner once when GitHub rejects the dispatch token, then waits 6 hours before repeating", async () => {
+    githubStatus = 401;
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await run(POLL_CRON, T);
+    const sends = () => bodies.filter((b) => String(b.chat_id) === env.OWNER_USER_ID);
+    expect(sends()).toHaveLength(1);
+    expect(sends()[0]!.text).toContain("GitHub rejected the bot's dispatch token");
+    expect(sends()[0]!.text).toContain("GITHUB_DISPATCH_TOKEN");
+
+    await run(POLL_CRON, T + 15 * 60_000); // still failing 15 minutes later: no repeat
+    expect(sends()).toHaveLength(1);
+
+    await run(POLL_CRON, T + 6 * 3600_000); // 6 hours later: reminded again
+    expect(sends()).toHaveLength(2);
+    expect(err.mock.calls.flat().join(" ")).not.toContain("ghtok");
+    err.mockRestore();
+  });
+
+  it("sends no token alert when the dispatch succeeds or fails for other reasons", async () => {
+    await run(POLL_CRON);
+    githubStatus = 500;
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await run(POLL_CRON);
+    err.mockRestore();
+    expect(bodies).toHaveLength(0);
   });
 
   it("treats a stale or unknown cron (Cloudflare kept firing the old */10) as a poll in active hours, not the watchdog", async () => {

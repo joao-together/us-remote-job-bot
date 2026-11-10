@@ -135,6 +135,8 @@ export interface Settings {
   lastSuccessfulPollAt?: number;
   lastPollStats?: PollStats;
   lastWarningAt?: number;
+  /** Last time the owner was told the GitHub dispatch token was rejected. */
+  lastDispatchAlertAt?: number;
 }
 
 export type SettingKey =
@@ -143,7 +145,8 @@ export type SettingKey =
   | "last_poll_start_at"
   | "last_successful_poll_at"
   | "last_poll_stats"
-  | "last_warning_at";
+  | "last_warning_at"
+  | "last_dispatch_alert_at";
 
 export interface NewCompany {
   name: string;
@@ -405,6 +408,7 @@ export class Store {
       lastSuccessfulPollAt: optNum("last_successful_poll_at"),
       lastPollStats: stats && typeof stats === "object" ? (stats as PollStats) : undefined,
       lastWarningAt: optNum("last_warning_at"),
+      lastDispatchAlertAt: optNum("last_dispatch_alert_at"),
     };
   }
 

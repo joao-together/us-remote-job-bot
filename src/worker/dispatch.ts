@@ -28,9 +28,21 @@ export interface DispatchConfig {
  * rejects the request.
  */
 export async function dispatchWorkflow(cfg: DispatchConfig, workflow: string, fetcher: typeof fetch = fetch): Promise<boolean> {
+  return (await dispatchWorkflowStatus(cfg, workflow, fetcher)) === 204;
+}
+
+/**
+ * Like dispatchWorkflow, but returns GitHub's HTTP status (204 on success), or null when
+ * unconfigured or the request itself failed. 401/403 mean the dispatch token is expired or revoked.
+ */
+export async function dispatchWorkflowStatus(
+  cfg: DispatchConfig,
+  workflow: string,
+  fetcher: typeof fetch = fetch,
+): Promise<number | null> {
   if (!cfg.token || !cfg.repo) {
     console.log(`dispatch ${workflow}: GITHUB_DISPATCH_TOKEN or GITHUB_REPO not set; skipping`);
-    return false;
+    return null;
   }
   const url = `https://api.github.com/repos/${cfg.repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
   try {
@@ -46,13 +58,13 @@ export async function dispatchWorkflow(cfg: DispatchConfig, workflow: string, fe
       body: JSON.stringify({ ref: cfg.ref ?? "main" }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (res.status === 204) return true;
+    if (res.status === 204) return 204;
     const text = await res.text().catch(() => "");
     console.error(`dispatch ${workflow}: GitHub returned ${res.status}: ${redactSecrets(text.slice(0, 200), cfg.token)}`);
-    return false;
+    return res.status;
   } catch (err) {
     console.error(`dispatch ${workflow}: request failed: ${redactSecrets(errorMessage(err), cfg.token)}`);
-    return false;
+    return null;
   }
 }
 

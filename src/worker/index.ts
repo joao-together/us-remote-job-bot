@@ -3,7 +3,16 @@ import { bindingDriver } from "../core/store/driver-binding";
 import { TelegramClient, TelegramError } from "../core/telegram/client";
 import { inActiveHours, redactSecrets } from "../core/util";
 import { handleUpdate } from "./commands";
-import { dispatchPoll, dispatchWorkflow, EXPAND_CRON, EXPAND_WORKFLOW, POLL_CRON, REPORT_CRON, WATCHDOG_CRON } from "./dispatch";
+import {
+  dispatchWorkflow,
+  dispatchWorkflowStatus,
+  EXPAND_CRON,
+  EXPAND_WORKFLOW,
+  POLL_CRON,
+  POLL_WORKFLOW,
+  REPORT_CRON,
+  WATCHDOG_CRON,
+} from "./dispatch";
 import type { WorkerEnv } from "./env";
 import { runDailyReports } from "./report";
 import { runWatchdog } from "./watchdog";
@@ -86,6 +95,30 @@ export default {
       }
       console.log(`scheduled: unknown cron "${controller.cron}", treating as poll`);
     }
-    await dispatchPoll(github);
+    const status = await dispatchWorkflowStatus(github, POLL_WORKFLOW);
+    if (status === 401 || status === 403) await alertDispatchAuth(env, controller.scheduledTime);
   },
 } satisfies ExportedHandler<WorkerEnv>;
+
+/** Minimum gap between "dispatch token rejected" messages to the owner. */
+export const DISPATCH_ALERT_REWARN_MS = 6 * 60 * 60 * 1000;
+
+export const DISPATCH_AUTH_ALERT =
+  "⚠️ <b>Job checks are stopped</b>: GitHub rejected the bot's dispatch token (expired or revoked).\n\n" +
+  "Fix: create a new fine-grained token at https://github.com/settings/personal-access-tokens/new " +
+  "(repository <code>us-remote-job-bot</code> only, permission <b>Actions: Read and write</b>, no expiration), then run " +
+  "<code>npx wrangler secret put GITHUB_DISPATCH_TOKEN</code> in the project folder.";
+
+/** Tells the owner (at most every DISPATCH_ALERT_REWARN_MS) that polling is blocked by a bad GitHub token. */
+async function alertDispatchAuth(env: WorkerEnv, now: number): Promise<void> {
+  try {
+    const store = new Store(bindingDriver(env.DB));
+    const { lastDispatchAlertAt } = await store.getSettings();
+    if (lastDispatchAlertAt !== undefined && now - lastDispatchAlertAt < DISPATCH_ALERT_REWARN_MS) return;
+    await new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN }).sendMessage(env.OWNER_USER_ID, DISPATCH_AUTH_ALERT);
+    await store.setSetting("last_dispatch_alert_at", now);
+  } catch (err) {
+    const detail = err instanceof TelegramError ? `${err.status} ${err.description}` : err instanceof Error ? err.message : "unknown";
+    console.error(`dispatch auth alert failed: ${redactSecrets(detail, env.TELEGRAM_BOT_TOKEN)}`);
+  }
+}
